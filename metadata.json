@@ -1,0 +1,6 @@
+{
+  "name": "Smart IV Monitor",
+  "description": "Real-time IoT smart IV infusion monitoring system with ESP32 sensor integration, flow diagnostics, alert management, and patient logs.",
+  "requestFramePermissions": ["notifications"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

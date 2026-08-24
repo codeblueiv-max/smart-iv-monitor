@@ -1,0 +1,50 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+    "patients": {
+      ".read": "auth != null",
+      "$patientId": {
+        ".read": "auth != null",
+        "details": {
+          ".read": "auth != null",
+          ".write": "auth != null",
+          ".validate": "newData.hasChildren(['bedNo', 'patientName', 'initialVolume', 'prescribedDripRate', 'dropFactor']) && newData.child('bedNo').isString() && newData.child('bedNo').val().length > 0 && newData.child('patientName').isString() && newData.child('patientName').val().length > 0 && newData.child('initialVolume').isNumber() && newData.child('initialVolume').val() > 0 && newData.child('initialVolume').val() <= 5000 && newData.child('prescribedDripRate').isNumber() && newData.child('prescribedDripRate').val() > 0 && newData.child('dropFactor').isNumber() && newData.child('dropFactor').val() > 0"
+        },
+        "current": {
+          ".read": "auth != null",
+          ".write": "auth != null",
+          ".validate": "newData.hasChildren(['weight', 'dripRate', 'totalDrops']) && newData.child('weight').isNumber() && newData.child('weight').val() >= 0 && newData.child('weight').val() <= 5000 && newData.child('dripRate').isNumber() && newData.child('dripRate').val() >= 0 && newData.child('dripRate').val() <= 500 && newData.child('totalDrops').isNumber() && newData.child('totalDrops').val() >= 0"
+        },
+        "logs": {
+          ".read": "auth != null",
+          "$logId": {
+            ".write": "auth != null && (!data.exists() || newData.exists())",
+            ".validate": "newData.hasChildren(['timestamp', 'weight', 'volume', 'remainingPercentage', 'dripRate', 'flowRate']) && newData.child('timestamp').isNumber() && newData.child('weight').isNumber() && newData.child('volume').isNumber() && newData.child('remainingPercentage').isNumber() && newData.child('dripRate').isNumber() && newData.child('flowRate').isNumber()"
+          }
+        },
+        "alerts": {
+          ".read": "auth != null",
+          "$alertId": {
+            ".write": "auth != null",
+            ".validate": "newData.hasChildren(['id', 'patientId', 'bedNo', 'type', 'severity', 'timestamp', 'message']) && newData.child('id').isString() && newData.child('patientId').isString() && newData.child('bedNo').isString() && newData.child('timestamp').isNumber()"
+          }
+        },
+        "events": {
+          ".read": "auth != null",
+          "$eventId": {
+            ".write": "auth != null",
+            ".validate": "newData.hasChildren(['id', 'patientId', 'type', 'severity', 'timestamp', 'message']) && newData.child('timestamp').isNumber()"
+          }
+        }
+      }
+    },
+    "calibrations": {
+      ".read": "auth != null",
+      "$bedNo": {
+        ".write": "auth != null",
+        ".validate": "newData.hasChildren(['bedNo', 'tareWeight', 'calibrationFactor']) && newData.child('bedNo').isString() && newData.child('tareWeight').isNumber() && newData.child('tareWeight').val() >= 0 && newData.child('calibrationFactor').isNumber() && newData.child('calibrationFactor').val() > 0"
+      }
+    }
+  }
+}
