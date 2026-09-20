@@ -161,7 +161,7 @@ function PatientCardComponent({ patient, onSelect }: PatientCardProps) {
             <Droplets className="w-3 h-3 text-sky-600 shrink-0" /> Drip
           </span>
           <span className="font-bold text-slate-800 text-xs mt-0.5">
-            {dripRate > 0 ? `${dripRate} dpm` : '0 dpm'}
+            {dripRate !== null && dripRate !== undefined ? `${dripRate} dpm` : '--'}
           </span>
         </div>
 
@@ -171,7 +171,7 @@ function PatientCardComponent({ patient, onSelect }: PatientCardProps) {
             <Wind className="w-3 h-3 text-teal-600 shrink-0" /> Flow
           </span>
           <span className="font-bold text-slate-800 text-xs mt-0.5">
-            {flowRate > 0 ? `${flowRate} mL/h` : '--'}
+            {flowRate !== null && flowRate !== undefined ? `${flowRate} mL/h` : '--'}
           </span>
         </div>
 

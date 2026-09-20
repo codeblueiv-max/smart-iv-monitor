@@ -15,7 +15,12 @@ export type PatientStatus =
   | 'ABNORMAL'
   | 'NO_PULSE_DATA'
   | 'MONITORING_STOPPED'
-  | 'STOPPED';
+  | 'STOPPED'
+  | 'OCCLUSION'
+  | 'LEAKAGE'
+  | 'EXCESSIVE_FLOW'
+  | 'BAG_NEARLY_EMPTY'
+  | 'ABNORMAL_PULSE';
 
 export type PulseStatus =
   | 'NORMAL'
@@ -45,8 +50,10 @@ export interface PatientDetails {
   patientName: string;
   fluidType: IVFluidType;
   initialVolume: number; // in mL
-  prescribedDripRate: number; // in drops/min (dpm)
-  dropFactor: number; // in drops/mL (standard is 15, 20 or 60 for microdrip)
+  prescribedInfusionTimeHours?: number; // infusion time in hours
+  prescribedInfusionTimeMinutes?: number; // infusion time in minutes
+  prescribedDripRate: number; // exact prescribed drip rate in drops/min (dpm)
+  dropFactor: number; // in drops/mL (e.g. 10, 15, 20, 60)
   startTime: number;
   stopTime?: number | null;
   monitoring: boolean;
@@ -98,8 +105,8 @@ export interface PatientLogRecord {
   dropCount?: number;
   irDropCount?: number;
   dropRate?: number;
-  dripRate: number;
-  flowRate: number;
+  dripRate: number | null;
+  flowRate: number | null;
   totalDrops: number;
   etaMinutes: number | null;
   status: PatientStatus;
@@ -159,12 +166,21 @@ export interface IRSensorInput {
   dropCount: number;
   lastDropTimestamp: number;
   sensorStatus: string;
+  dripRate?: number | null;
 }
 
 export interface PulseSensorInput {
   heartRateRaw: number;
   spo2Raw: number;
   sensorStatus: string;
+}
+
+export interface AIPrediction {
+  condition: 'NORMAL' | 'SLOW INFUSION' | 'FAST INFUSION' | 'FLOW INTERRUPTION' | 'ABNORMAL PATTERN' | string;
+  confidence: number; // 0.0 to 1.0 (e.g. 0.94)
+  remainingTime: number; // in hours (e.g. 3.2)
+  timestamp: number;
+  modelVersion: string;
 }
 
 export interface PatientInput {
@@ -179,20 +195,32 @@ export interface PatientOutput {
   remainingVolume: number;
   remainingPercentage: number;
   dropCount: number;
-  dripRate: number;
-  flowRate: number;
+  dripRate: number | null;
+  flowRate: number | null;
   eta: string;
   heartRate: number;
   spo2: number;
   ivStatus: PatientStatus;
   pulseStatus: PulseStatus;
   lastCalculated: number;
+  // Dynamic parameters from formulas
+  initialVolumeML?: number;
+  remainingVolumeML?: number;
+  infusedVolumeML?: number;
+  totalDropsCount?: number;
+  actualDPM?: number;
+  dropFactor?: number;
+  actualFlowRateMLH?: number;
+  prescribedFlowRateMLH?: number;
+  flowDeviationPercentage?: string | number;
+  flowStatus?: string;
 }
 
 export interface Patient {
   details: PatientDetails;
   input: PatientInput;
   output: PatientOutput;
+  ai?: AIPrediction;
   current?: SensorReading; // alias for backwards compatibility
   logs: PatientLogRecord[];
   alerts: Alert[];

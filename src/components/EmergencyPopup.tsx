@@ -1,19 +1,21 @@
 import React, { useState } from 'react';
 import { Alert } from '../types';
-import { StatusBadge, PulseStatusBadge } from './StatusBadge';
 import { formatETA } from '../utils/calculations';
 import {
   AlertTriangle,
   AlertCircle,
   Clock,
-  Droplets,
-  Activity,
   ChevronLeft,
   ChevronRight,
   ShieldAlert,
   Volume2,
   VolumeX,
   Heart,
+  Bell,
+  X,
+  ExternalLink,
+  Minimize2,
+  Maximize2,
 } from 'lucide-react';
 
 interface EmergencyPopupProps {
@@ -52,190 +54,216 @@ export function EmergencyPopup({
 
   const snapshot = activeAlert.readingsSnapshot;
   const isPulseAlert = activeAlert.category === 'PULSE' || activeAlert.type.includes('PULSE');
+  const isCritical = activeAlert.severity === 'CRITICAL';
 
+  // Minimized Compact Floating Alert Badge
   if (isMinimized) {
     return (
-      <div className="fixed bottom-4 right-4 z-40 animate-bounce">
+      <div className="fixed top-4 right-4 sm:top-6 sm:right-6 z-50 animate-in fade-in slide-in-from-top-4 duration-200">
         <button
           onClick={() => setIsMinimized(false)}
-          className="flex items-center gap-2 bg-rose-600 hover:bg-rose-700 text-white font-bold px-4 py-2.5 rounded-full shadow-lg border-2 border-white"
+          className="flex items-center gap-2.5 bg-rose-600 hover:bg-rose-700 text-white font-bold px-4 py-2.5 rounded-2xl shadow-xl border-2 border-white/90 transition-all hover:scale-105"
         >
-          <AlertCircle className="w-5 h-5 animate-pulse" />
-          <span>
-            {alerts.length} Critical Alert{alerts.length > 1 ? 's' : ''} (Bed {activeAlert.bedNo})
-          </span>
+          <Bell className="w-5 h-5 animate-bounce text-amber-200" />
+          <div className="text-left leading-tight">
+            <div className="text-[10px] uppercase font-black text-rose-200 tracking-wider">
+              {alerts.length} Active Notification{alerts.length > 1 ? 's' : ''}
+            </div>
+            <div className="text-xs font-bold text-white">
+              Bed {activeAlert.bedNo} - {activeAlert.patientName}
+            </div>
+          </div>
+          <Maximize2 className="w-4 h-4 ml-1 opacity-80" />
         </button>
       </div>
     );
   }
 
+  // Top-Right Notification Panel Alert Section (Non-disruptive floating toast)
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs animate-in fade-in duration-150">
-      <div className="bg-white rounded-2xl max-w-xl w-full shadow-2xl border-2 border-rose-500 overflow-hidden">
-        {/* Urgent Header */}
-        <div className={`px-5 py-3.5 text-white flex items-center justify-between ${isPulseAlert ? 'bg-gradient-to-r from-rose-700 via-rose-600 to-amber-700' : 'bg-gradient-to-r from-rose-600 to-red-700'}`}>
-          <div className="flex items-center gap-2.5">
-            <div className="p-2 bg-white/20 rounded-lg animate-pulse">
-              {isPulseAlert ? <Heart className="w-6 h-6 text-white fill-white" /> : <ShieldAlert className="w-6 h-6 text-white" />}
+    <div className="fixed top-4 right-4 sm:top-6 sm:right-6 z-50 max-w-md w-full pointer-events-none animate-in slide-in-from-top-5 fade-in duration-200">
+      <div className="pointer-events-auto bg-white rounded-2xl shadow-2xl border-2 border-rose-500 overflow-hidden ring-4 ring-rose-500/10">
+        {/* Notification Header */}
+        <div
+          className={`px-4 py-3 text-white flex items-center justify-between ${
+            isPulseAlert
+              ? 'bg-gradient-to-r from-rose-700 via-rose-600 to-amber-700'
+              : isCritical
+              ? 'bg-gradient-to-r from-rose-600 to-red-700'
+              : 'bg-gradient-to-r from-amber-600 to-rose-600'
+          }`}
+        >
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="p-1.5 bg-white/20 rounded-lg shrink-0 animate-pulse">
+              {isPulseAlert ? (
+                <Heart className="w-5 h-5 text-white fill-white" />
+              ) : (
+                <ShieldAlert className="w-5 h-5 text-white" />
+              )}
             </div>
-            <div>
-              <div className="text-xs uppercase tracking-wider font-extrabold text-rose-100 flex items-center gap-2">
-                <span>{isPulseAlert ? '❤️ PULSE EMERGENCY' : '🚨 IV EMERGENCY ALERT'}</span>
+            <div className="truncate">
+              <div className="text-[10px] uppercase tracking-wider font-extrabold text-rose-100 flex items-center gap-1.5">
+                <Bell className="w-3 h-3 text-amber-200 inline" />
+                <span>NOTIFICATION ALERT</span>
                 {alerts.length > 1 && (
-                  <span className="bg-rose-800/80 px-2 py-0.5 rounded text-[11px] font-bold">
+                  <span className="bg-white/20 px-1.5 py-0.2 rounded text-[10px] font-bold">
                     {validIndex + 1} of {alerts.length}
                   </span>
                 )}
               </div>
-              <h2 className="text-base font-black tracking-tight leading-tight whitespace-pre-line">
+              <h3 className="text-sm font-black tracking-tight leading-tight truncate text-white">
                 {activeAlert.message}
-              </h2>
+              </h3>
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5 shrink-0 ml-2">
             <button
               onClick={onToggleAudio}
-              title={audioAlertsEnabled ? 'Mute Alert Sound' : 'Unmute Alert Sound'}
+              title={audioAlertsEnabled ? 'Mute Alert Audio' : 'Unmute Alert Audio'}
               className="p-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white transition-colors"
             >
               {audioAlertsEnabled ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
             </button>
             <button
               onClick={() => setIsMinimized(true)}
-              className="text-xs bg-white/10 hover:bg-white/20 px-2.5 py-1 rounded text-rose-100 font-medium"
+              title="Minimize Notification"
+              className="p-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white transition-colors"
             >
-              Minimize
+              <Minimize2 className="w-4 h-4" />
+            </button>
+            <button
+              onClick={() => setIsMinimized(true)}
+              title="Dismiss to Badge"
+              className="p-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white transition-colors"
+            >
+              <X className="w-4 h-4" />
             </button>
           </div>
         </div>
 
-        {/* Multi-alert navigator if multiple */}
+        {/* Multi-notification Queue Selector Bar */}
         {alerts.length > 1 && (
-          <div className="bg-rose-50 px-4 py-2 border-b border-rose-100 flex items-center justify-between text-xs text-rose-800">
-            <span className="font-semibold">
-              Queue: {alerts.length} patients requiring immediate intervention
+          <div className="bg-rose-50 px-3.5 py-1.5 border-b border-rose-100 flex items-center justify-between text-xs text-rose-800">
+            <span className="font-semibold text-[11px] truncate">
+              Notification Queue ({alerts.length} active alerts)
             </span>
-            <div className="flex items-center gap-1">
+            <div className="flex items-center gap-1 shrink-0">
               <button
                 onClick={() => setCurrentIndex((prev) => Math.max(0, prev - 1))}
                 disabled={validIndex === 0}
                 className="p-1 rounded bg-white hover:bg-rose-100 border border-rose-200 disabled:opacity-40"
               >
-                <ChevronLeft className="w-4 h-4" />
+                <ChevronLeft className="w-3.5 h-3.5" />
               </button>
-              <span className="font-bold px-1.5">
-                {validIndex + 1} / {alerts.length}
+              <span className="font-bold px-1 text-[11px]">
+                {validIndex + 1}/{alerts.length}
               </span>
               <button
                 onClick={() => setCurrentIndex((prev) => Math.min(alerts.length - 1, prev + 1))}
                 disabled={validIndex === alerts.length - 1}
                 className="p-1 rounded bg-white hover:bg-rose-100 border border-rose-200 disabled:opacity-40"
               >
-                <ChevronRight className="w-4 h-4" />
+                <ChevronRight className="w-3.5 h-3.5" />
               </button>
             </div>
           </div>
         )}
 
-        {/* Content Body */}
-        <div className="p-5 space-y-4">
-          {/* Patient identification banner */}
-          <div className="flex items-center justify-between bg-slate-50 border border-slate-200 rounded-xl p-3">
-            <div>
-              <div className="text-xs text-slate-500 uppercase font-semibold">Patient Information</div>
-              <div className="text-base font-bold text-slate-900 flex items-center gap-2">
+        {/* Notification Body */}
+        <div className="p-3.5 space-y-3">
+          {/* Patient Details & Detection Time Header */}
+          <div className="flex items-center justify-between bg-slate-50 border border-slate-200 rounded-xl px-3 py-2">
+            <div className="min-w-0">
+              <div className="text-[10px] text-slate-500 uppercase font-extrabold tracking-wider">
+                Patient & Bed
+              </div>
+              <div className="text-sm font-bold text-slate-900 truncate flex items-center gap-2">
                 <span>{activeAlert.patientName}</span>
-                <span className="text-xs font-semibold px-2 py-0.5 bg-slate-200 text-slate-700 rounded-md">
+                <span className="text-[11px] font-bold px-1.5 py-0.2 bg-slate-200 text-slate-800 rounded">
                   BED {activeAlert.bedNo}
                 </span>
               </div>
             </div>
-            <div className="text-right">
-              <div className="text-xs text-slate-500">Detected At</div>
-              <div className="text-sm font-semibold text-slate-700 flex items-center gap-1">
-                <Clock className="w-3.5 h-3.5 text-slate-400" />
+            <div className="text-right shrink-0">
+              <div className="text-[10px] text-slate-500 font-medium">Detected At</div>
+              <div className="text-xs font-semibold text-slate-700 flex items-center justify-end gap-1">
+                <Clock className="w-3 h-3 text-slate-400" />
                 {detectionTime}
               </div>
             </div>
           </div>
 
-          {/* Telemetry Snapshot Grid */}
+          {/* Telemetry Snapshot Pill Grid */}
           {snapshot && (
-            <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-center">
-              <div className="bg-rose-50/70 border border-rose-100 rounded-lg p-2.5">
-                <div className="text-[11px] font-semibold text-rose-600">REMAINING %</div>
-                <div className="text-xl font-black text-rose-700">
+            <div className="grid grid-cols-4 gap-1.5 text-center">
+              <div className="bg-rose-50/80 border border-rose-100 rounded-lg p-1.5">
+                <div className="text-[9px] font-bold text-rose-600 uppercase">REM %</div>
+                <div className="text-base font-black text-rose-700">
                   {snapshot.remainingPercentage !== null && snapshot.remainingPercentage !== undefined
                     ? `${Math.round(snapshot.remainingPercentage)}%`
                     : '—'}
                 </div>
               </div>
 
-              <div className="bg-slate-50 border border-slate-200 rounded-lg p-2.5">
-                <div className="text-[11px] font-semibold text-slate-500">VOLUME</div>
-                <div className="text-lg font-bold text-slate-800">
+              <div className="bg-slate-50 border border-slate-200 rounded-lg p-1.5">
+                <div className="text-[9px] font-bold text-slate-500 uppercase">VOLUME</div>
+                <div className="text-xs font-bold text-slate-800 mt-0.5">
                   {snapshot.volume !== null && snapshot.volume !== undefined ? `${snapshot.volume} mL` : '—'}
                 </div>
               </div>
 
-              <div className="bg-slate-50 border border-slate-200 rounded-lg p-2.5">
-                <div className="text-[11px] font-semibold text-slate-500">DRIP RATE</div>
-                <div className="text-lg font-bold text-slate-800">
+              <div className="bg-slate-50 border border-slate-200 rounded-lg p-1.5">
+                <div className="text-[9px] font-bold text-slate-500 uppercase">DRIP RATE</div>
+                <div className="text-xs font-bold text-slate-800 mt-0.5">
                   {snapshot.dripRate !== null && snapshot.dripRate !== undefined ? `${snapshot.dripRate} dpm` : '—'}
                 </div>
               </div>
 
-              <div className="bg-rose-50/60 border border-rose-200 rounded-lg p-2.5">
-                <div className="text-[11px] font-semibold text-rose-700 flex items-center justify-center gap-1">
-                  <Heart className="w-3 h-3 text-rose-600 fill-rose-500" />
+              <div className="bg-rose-50/70 border border-rose-200 rounded-lg p-1.5">
+                <div className="text-[9px] font-bold text-rose-700 uppercase flex items-center justify-center gap-0.5">
+                  <Heart className="w-2.5 h-2.5 text-rose-600 fill-rose-500" />
                   <span>PULSE</span>
                 </div>
-                <div className="text-lg font-black text-rose-900">
+                <div className="text-xs font-black text-rose-900 mt-0.5">
                   {snapshot.pulseRate !== null && snapshot.pulseRate !== undefined ? `${snapshot.pulseRate} BPM` : '—'}
-                </div>
-              </div>
-
-              <div className="bg-slate-50 border border-slate-200 rounded-lg p-2.5">
-                <div className="text-[11px] font-semibold text-slate-500">ETA</div>
-                <div className="text-lg font-bold text-slate-800">
-                  {formatETA(snapshot.etaMinutes ?? null)}
                 </div>
               </div>
             </div>
           )}
 
-          {/* Suggested Clinical Action Box */}
-          <div className="bg-amber-50 border border-amber-200 rounded-xl p-3.5 flex items-start gap-3">
-            <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
-            <div>
-              <div className="text-xs font-bold text-amber-900 uppercase">Suggested Nursing Action</div>
-              <div className="text-sm text-amber-800 mt-0.5">{activeAlert.suggestedAction}</div>
+          {/* Suggested Nursing Action */}
+          <div className="bg-amber-50 border border-amber-200 rounded-xl p-2.5 flex items-start gap-2">
+            <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+            <div className="text-xs leading-tight">
+              <span className="font-bold text-amber-900">Suggested Action: </span>
+              <span className="text-amber-800 font-medium">{activeAlert.suggestedAction}</span>
             </div>
           </div>
         </div>
 
-        {/* Action Controls */}
-        <div className="bg-slate-50 px-5 py-3.5 border-t border-slate-200 flex flex-wrap items-center justify-between gap-3">
-          {onViewPatient && (
+        {/* Notification Action Buttons */}
+        <div className="bg-slate-50 px-3.5 py-2.5 border-t border-slate-200 flex items-center justify-between gap-2">
+          {onViewPatient ? (
             <button
-              onClick={() => {
-                onViewPatient(activeAlert.patientId);
-              }}
-              className="text-xs font-semibold text-sky-700 hover:text-sky-900 underline underline-offset-2"
+              onClick={() => onViewPatient(activeAlert.patientId)}
+              className="text-xs font-bold text-sky-700 hover:text-sky-900 flex items-center gap-1 transition-colors"
             >
-              Open Full Patient Monitor →
+              <span>View Bed</span>
+              <ExternalLink className="w-3 h-3" />
             </button>
+          ) : (
+            <div />
           )}
 
-          <div className="flex items-center gap-2 ml-auto">
+          <div className="flex items-center gap-2">
             <button
               onClick={() =>
                 onStopMonitoring(activeAlert.patientId, activeAlert.patientName, activeAlert.bedNo)
               }
-              className="px-3.5 py-2 text-xs font-bold text-rose-700 hover:bg-rose-100 rounded-lg border border-rose-300 transition-colors"
+              className="px-2.5 py-1.5 text-xs font-bold text-rose-700 hover:bg-rose-100 rounded-lg border border-rose-200 transition-colors"
             >
-              Stop Monitoring
+              Stop
             </button>
 
             <button
@@ -245,11 +273,11 @@ export function EmergencyPopup({
                   setCurrentIndex(validIndex - 1);
                 }
               }}
-              className="px-5 py-2 text-xs font-bold text-white bg-slate-900 hover:bg-slate-800 rounded-lg shadow-sm transition-colors flex items-center gap-1.5"
+              className="px-4 py-1.5 text-xs font-bold text-white bg-slate-900 hover:bg-slate-800 rounded-lg shadow-sm transition-colors flex items-center gap-1.5"
             >
               <span>Acknowledge</span>
               {alerts.length > 1 && (
-                <span className="text-[10px] bg-slate-700 px-1.5 py-0.2 rounded font-normal">
+                <span className="text-[10px] bg-slate-700 px-1 py-0.2 rounded font-normal">
                   Next ({alerts.length - 1})
                 </span>
               )}
@@ -280,7 +308,11 @@ export function ActiveAlertBanner({
       }`}
     >
       <div className="flex items-center gap-3">
-        <div className={`p-2 rounded-lg ${isCritical ? 'bg-rose-200 text-rose-700 animate-pulse' : 'bg-amber-200 text-amber-700'}`}>
+        <div
+          className={`p-2 rounded-lg ${
+            isCritical ? 'bg-rose-200 text-rose-700 animate-pulse' : 'bg-amber-200 text-amber-700'
+          }`}
+        >
           {isCritical ? <ShieldAlert className="w-5 h-5" /> : <AlertTriangle className="w-5 h-5" />}
         </div>
         <div>
@@ -313,3 +345,4 @@ export function ActiveAlertBanner({
     </div>
   );
 }
+

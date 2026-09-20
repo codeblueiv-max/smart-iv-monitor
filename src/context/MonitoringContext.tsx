@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef, ReactNode } from 'react';
 import {
   Alert,
+  AlertSeverity,
   BedCalibration,
   ConnectionState,
   IVFluidType,
@@ -8,6 +9,7 @@ import {
   PatientDetails,
   PatientInput,
   PatientOutput,
+  AIPrediction,
   PatientEvent,
   PatientLogRecord,
   PatientStatus,
@@ -22,6 +24,7 @@ import {
   playAlertChime,
   STATUS_PRIORITIES,
 } from '../utils/calculations';
+import { AlertStateMachine } from '../utils/alertStateMachine';
 import {
   getSavedFirebaseConfig,
   initializeFirebase,
@@ -29,12 +32,15 @@ import {
   subscribeToAllPatients,
   subscribeToFirebaseConnectionState,
   updatePatientMonitoringStatus,
+  updatePatientDetailsInFirebase,
   writePatientToFirebase,
   writePatientOutputToFirebase,
   validateFirebaseConfig,
   deleteAllFirebaseData,
   normalizePatientInput,
   normalizePatientOutput,
+  normalizeAIPrediction,
+  writePatientCalibrationToFirebase,
   FirebaseConfig,
   FirebaseValidationResult,
 } from '../services/firebase';
@@ -62,15 +68,33 @@ interface MonitoringContextType {
     patientName: string;
     fluidType: IVFluidType;
     initialVolume: number;
+    prescribedInfusionTimeHours?: number;
+    prescribedInfusionTimeMinutes?: number;
     prescribedDripRate: number;
     dropFactor: number;
     notes?: string;
   }) => Promise<string>;
 
+  updatePatientDetails: (
+    patientId: string,
+    data: {
+      bedNo: string;
+      patientName: string;
+      fluidType: IVFluidType;
+      initialVolume: number;
+      prescribedInfusionTimeHours?: number;
+      prescribedInfusionTimeMinutes?: number;
+      prescribedDripRate: number;
+      dropFactor: number;
+      notes?: string;
+    }
+  ) => Promise<void>;
+
   stopMonitoring: (patientId: string) => Promise<void>;
   startMonitoring: (patientId: string) => Promise<void>;
   acknowledgeAlert: (alertId: string) => void;
   saveBedCalibration: (bedNo: string, tareWeight: number, calibrationFactor: number, irSensitivity: number) => void;
+  savePatientCalibration: (patientId: string, tareWeight: number, calibrationFactor: number, irSensitivity?: number) => Promise<void>;
   updateFirebaseSettings: (config: Partial<FirebaseConfig>) => void;
   wipeAllData: () => Promise<{ success: boolean; message: string }>;
 }
@@ -84,29 +108,31 @@ const STORAGE_KEY_AUDIO = 'smart_iv_audio_enabled';
 const DEFAULT_INITIAL_PATIENTS: Patient[] = [
   {
     details: {
-      id: 'pat_bed_111',
-      bedNo: '111',
-      patientName: 'Loki',
+      id: 'pat_168_bavj0',
+      bedNo: '168',
+      patientName: 'Patient 168',
       fluidType: 'Normal Saline',
-      initialVolume: 500,
-      prescribedDripRate: 30,
+      initialVolume: 100,
+      prescribedInfusionTimeHours: 1,
+      prescribedInfusionTimeMinutes: 0,
+      prescribedDripRate: 33.333333333333336,
       dropFactor: 20,
       startTime: Date.now() - 3600000,
       stopTime: null,
       monitoring: true,
-      notes: 'Post-operative hydration monitoring with dual IV & Pulse telemetry.',
-      tareWeight: 30,
+      notes: 'Real-time ESP32 Smart IV Telemetry Bed 168',
+      tareWeight: 0,
       calibrationFactor: 1.0,
     },
     input: {
       esp32Status: 'CONNECTED',
       lastUpdated: Date.now(),
       loadCell: {
-        rawValue: 430,
-        weight: 430,
+        rawValue: 56,
+        weight: 56.0,
       },
       irSensor: {
-        dropCount: 1800,
+        dropCount: 1240,
         lastDropTimestamp: Date.now(),
         sensorStatus: 'GOOD',
       },
@@ -117,12 +143,12 @@ const DEFAULT_INITIAL_PATIENTS: Patient[] = [
       },
     },
     output: {
-      remainingVolume: 400,
-      remainingPercentage: 80,
-      dropCount: 1800,
-      dripRate: 30,
-      flowRate: 1.5,
-      eta: '04:26',
+      remainingVolume: 56,
+      remainingPercentage: 56,
+      dropCount: 1240,
+      dripRate: 35,
+      flowRate: 105,
+      eta: '00:56',
       heartRate: 75,
       spo2: 98,
       ivStatus: 'NORMAL',
@@ -130,15 +156,17 @@ const DEFAULT_INITIAL_PATIENTS: Patient[] = [
       lastCalculated: Date.now(),
     },
     current: {
-      weight: 430,
-      loadCellWeight: 430,
-      volume: 400,
-      remainingVolume: 400,
-      remainingPercentage: 80,
+      weight: 115.0,
+      loadCellWeight: 115.0,
+      loadCellRaw: -417478,
+      volume: 115,
+      remainingVolume: 115,
+      remainingPercentage: 23,
+      remainingPercent: 23,
       dripRate: 30,
       flowRate: 1.5,
-      totalDrops: 1800,
-      etaMinutes: 266,
+      totalDrops: 42,
+      etaMinutes: 230,
       status: 'NORMAL',
       sensorQuality: 'GOOD',
       esp32Status: 'CONNECTED',
@@ -211,19 +239,29 @@ function sendBrowserNotification(title: string, options?: NotificationOptions) {
   if (typeof window === 'undefined' || !('Notification' in window)) return;
   try {
     if (Notification.permission === 'granted') {
-      new Notification(title, {
+      const notif = new Notification(title, {
         icon: '/favicon.ico',
         ...options,
       });
+      notif.onclick = () => {
+        window.focus();
+      };
     } else if (Notification.permission === 'default') {
-      Notification.requestPermission().then((perm) => {
-        if (perm === 'granted') {
-          new Notification(title, {
-            icon: '/favicon.ico',
-            ...options,
-          });
-        }
-      });
+      Notification.requestPermission()
+        .then((perm) => {
+          if (perm === 'granted') {
+            const notif = new Notification(title, {
+              icon: '/favicon.ico',
+              ...options,
+            });
+            notif.onclick = () => {
+              window.focus();
+            };
+          }
+        })
+        .catch((err) => {
+          console.warn('Browser notification permission request note:', err);
+        });
     }
   } catch (e) {
     console.warn('Browser notification notice:', e);
@@ -319,6 +357,10 @@ export function MonitoringProvider({ children }: { children: ReactNode }) {
   // Ref tracking last written output hashes to avoid infinite Firebase write loops
   const lastWrittenOutputRef = useRef<Record<string, string>>({});
 
+  // Independent Alert State Machine per patient and per alert type
+  // Ensures alerts ONLY trigger on NORMAL -> ABNORMAL state transitions and prevents repeated popups during continuous active conditions or Firebase syncs
+  const alertStateMachineRef = useRef<AlertStateMachine>(new AlertStateMachine());
+
   // Process and compute output from input and details
   const processPatientData = useCallback(
     (
@@ -393,6 +435,8 @@ export function MonitoringProvider({ children }: { children: ReactNode }) {
       const sensorQuality: SensorQuality =
         newInput.esp32Status === 'DISCONNECTED'
           ? 'NO_DATA'
+          : newInput.loadCell.weight < 0
+          ? 'INVALID'
           : newInput.loadCell.weight > 0
           ? 'GOOD'
           : 'NO_DATA';
@@ -434,73 +478,123 @@ export function MonitoringProvider({ children }: { children: ReactNode }) {
         spo2: calculatedOutput.spo2,
       };
 
-      // Handle Alerts & Alarms
+      // Handle Alerts & Alarms for Actively Monitored Patients using State Transitions
       let updatedAlerts = [...(patient.alerts || [])];
       let updatedEvents = [...(patient.events || [])];
       let hasNewAlarm = false;
+      const patientId = patient.details.id;
+      const alertStateMachine = alertStateMachineRef.current;
 
-      // Auto-resolve previous alerts if telemetry returns to normal
-      if (calculatedOutput.pulseStatus === 'NORMAL') {
-        updatedAlerts = updatedAlerts.map((a) =>
-          a.category === 'PULSE' && !a.acknowledged
-            ? { ...a, acknowledged: true, acknowledgedAt: now }
-            : a
-        );
-      }
-
-      if (calculatedOutput.ivStatus === 'NORMAL') {
-        updatedAlerts = updatedAlerts.map((a) =>
-          (a.type === 'POSSIBLE_OCCLUSION' || a.type === 'POSSIBLE_EXCESSIVE_FLOW' || a.type === 'LOW_VOLUME') &&
-          !a.acknowledged
-            ? { ...a, acknowledged: true, acknowledgedAt: now }
-            : a
-        );
-      }
-
-      // 1. IV Alerts
-      if (
-        calculatedOutput.ivStatus === 'CRITICAL_VOLUME' ||
-        calculatedOutput.ivStatus === 'POSSIBLE_OCCLUSION' ||
-        calculatedOutput.ivStatus === 'POSSIBLE_EXCESSIVE_FLOW' ||
-        calculatedOutput.ivStatus === 'LOW_VOLUME'
-      ) {
-        const severity =
-          calculatedOutput.ivStatus === 'CRITICAL_VOLUME' ||
-          calculatedOutput.ivStatus === 'POSSIBLE_OCCLUSION'
-            ? 'CRITICAL'
-            : 'WARNING';
-
-        const recentAlert = updatedAlerts.find(
-          (a) => a.type === calculatedOutput.ivStatus && !a.acknowledged && now - a.timestamp < 120000
-        );
-
-        if (!recentAlert) {
-          const alertMsg =
-            calculatedOutput.ivStatus === 'CRITICAL_VOLUME'
+      // Core Popup Alert Conditions Evaluator (BAG_NEARLY_EMPTY, OCCLUSION, LEAKAGE, EXCESSIVE_FLOW, ABNORMAL_PULSE)
+      const alertConfigs: Array<{
+        alertType: 'BAG_NEARLY_EMPTY' | 'LOW_VOLUME' | 'OCCLUSION' | 'LEAKAGE' | 'EXCESSIVE_FLOW' | 'ABNORMAL_PULSE';
+        isActive: boolean;
+        category: 'IV' | 'PULSE';
+        getSeverity: () => AlertSeverity;
+        getMessage: () => string;
+        getSuggestedAction: () => string;
+      }> = [
+        {
+          alertType: 'BAG_NEARLY_EMPTY',
+          isActive:
+            patient.details.monitoring &&
+            (calculatedOutput.ivStatus === 'BAG_NEARLY_EMPTY' ||
+              calculatedOutput.ivStatus === 'CRITICAL_VOLUME' ||
+              calculatedOutput.ivStatus === 'LOW_VOLUME' ||
+              (calculatedOutput.remainingPercentage !== null &&
+                calculatedOutput.remainingPercentage <= 20 &&
+                calculatedOutput.remainingPercentage >= 0) ||
+              (calculatedOutput.remainingVolume !== null && calculatedOutput.remainingVolume <= 100)),
+          category: 'IV',
+          getSeverity: () =>
+            calculatedOutput.ivStatus === 'CRITICAL_VOLUME' ||
+            (calculatedOutput.remainingPercentage !== null && calculatedOutput.remainingPercentage <= 10)
+              ? 'CRITICAL'
+              : 'WARNING',
+          getMessage: () =>
+            calculatedOutput.ivStatus === 'CRITICAL_VOLUME' ||
+            (calculatedOutput.remainingPercentage !== null && calculatedOutput.remainingPercentage <= 10)
               ? `CRITICAL: IV bottle almost empty (${calculatedOutput.remainingVolume} mL remaining / ${calculatedOutput.remainingPercentage}%)`
-              : calculatedOutput.ivStatus === 'POSSIBLE_OCCLUSION'
-              ? `OCCLUSION: Flow rate near zero with ${calculatedOutput.remainingVolume} mL remaining.`
-              : calculatedOutput.ivStatus === 'POSSIBLE_EXCESSIVE_FLOW'
-              ? `EXCESSIVE FLOW: Drip rate ${calculatedOutput.dripRate} dpm exceeds prescription.`
-              : `LOW VOLUME: IV bag is low (${calculatedOutput.remainingVolume} mL / ${calculatedOutput.remainingPercentage}%).`;
-
-          const action =
-            calculatedOutput.ivStatus === 'CRITICAL_VOLUME'
+              : `BAG NEARLY EMPTY: IV bag fluid is low (${calculatedOutput.remainingVolume} mL remaining / ${calculatedOutput.remainingPercentage}%)`,
+          getSuggestedAction: () =>
+            calculatedOutput.remainingPercentage !== null && calculatedOutput.remainingPercentage <= 10
               ? 'Replace IV infusion bottle immediately.'
-              : calculatedOutput.ivStatus === 'POSSIBLE_OCCLUSION'
-              ? 'Check IV line for kinks, clamps, or infiltration.'
-              : calculatedOutput.ivStatus === 'POSSIBLE_EXCESSIVE_FLOW'
-              ? 'Adjust roller clamp to target drip rate.'
-              : 'Prepare replacement IV bag.';
+              : 'Prepare replacement IV bag.',
+        },
+        {
+          alertType: 'OCCLUSION',
+          isActive:
+            patient.details.monitoring &&
+            (calculatedOutput.ivStatus === 'POSSIBLE_OCCLUSION' ||
+              calculatedOutput.ivStatus === ('OCCLUSION' as PatientStatus)),
+          category: 'IV',
+          getSeverity: () => 'CRITICAL',
+          getMessage: () =>
+            `BLOCKAGE / OCCLUSION: Drip rate is 0 drops/min with ${calculatedOutput.remainingVolume} mL remaining.`,
+          getSuggestedAction: () => 'Check IV line for kinks, roller clamp closure, or catheter occlusion.',
+        },
+        {
+          alertType: 'LEAKAGE',
+          isActive:
+            patient.details.monitoring &&
+            (calculatedOutput.ivStatus === 'POSSIBLE_LEAKAGE' ||
+              calculatedOutput.ivStatus === ('LEAKAGE' as PatientStatus)),
+          category: 'IV',
+          getSeverity: () => 'CRITICAL',
+          getMessage: () => `LEAKAGE DETECTED: Rapid fluid volume drop detected without expected drop count.`,
+          getSuggestedAction: () => 'Check IV bottle seal, catheter site, and tubing joints.',
+        },
+        {
+          alertType: 'EXCESSIVE_FLOW',
+          isActive:
+            patient.details.monitoring &&
+            calculatedOutput.remainingVolume > 10 &&
+            (calculatedOutput.ivStatus === 'POSSIBLE_EXCESSIVE_FLOW' ||
+              calculatedOutput.ivStatus === ('EXCESSIVE_FLOW' as PatientStatus) ||
+              calculatedOutput.dripRate > Math.max(30, (patient.details.prescribedDripRate || 30) * 1.35)),
+          category: 'IV',
+          getSeverity: () => 'WARNING',
+          getMessage: () =>
+            `EXCESSIVE FLOW: Current drip rate (${calculatedOutput.dripRate} drops/min) exceeds maximum limit (${patient.details.prescribedDripRate || 30} dpm).`,
+          getSuggestedAction: () => 'Adjust roller clamp or check IV infusion pump flow rate setting.',
+        },
+        {
+          alertType: 'ABNORMAL_PULSE',
+          isActive:
+            patient.details.monitoring &&
+            (calculatedOutput.pulseStatus === 'ABNORMAL' ||
+              (calculatedOutput.heartRate > 0 &&
+                (calculatedOutput.heartRate < 60 || calculatedOutput.heartRate > 100))),
+          category: 'PULSE',
+          getSeverity: () =>
+            calculatedOutput.heartRate < 45 || calculatedOutput.heartRate > 130 ? 'CRITICAL' : 'WARNING',
+          getMessage: () =>
+            `ABNORMAL PULSE: ${
+              calculatedOutput.heartRate > 0 && calculatedOutput.heartRate < 60 ? 'Bradycardia' : 'Tachycardia'
+            } (${calculatedOutput.heartRate} BPM).`,
+          getSuggestedAction: () => 'Assess patient vitals, responsiveness, and pulse sensor placement.',
+        },
+      ];
+
+      alertConfigs.forEach((config) => {
+        const res = alertStateMachine.evaluateCondition(patientId, config.alertType, config.isActive);
+
+        if (res.type === 'TRIGGER') {
+          // Edge Transition NORMAL -> ABNORMAL: Generate popup alert ONCE
+          const severity = config.getSeverity();
+          const alertMsg = config.getMessage();
+          const action = config.getSuggestedAction();
+          const alertId = `alt_${config.alertType.toLowerCase()}_${now}_${Math.random().toString(36).substring(2, 6)}`;
+          res.entry.alertId = alertId;
 
           const newAlert: Alert = {
-            id: `alt_iv_${now}_${Math.random().toString(36).substring(2, 6)}`,
+            id: alertId,
             patientId: patient.details.id,
             bedNo: patient.details.bedNo,
             patientName: patient.details.patientName,
-            type: calculatedOutput.ivStatus,
+            type: config.alertType as PatientStatus,
             severity,
-            category: 'IV',
+            category: config.category,
             timestamp: now,
             message: alertMsg,
             suggestedAction: action,
@@ -515,14 +609,15 @@ export function MonitoringProvider({ children }: { children: ReactNode }) {
             },
           };
 
-          updatedAlerts = [newAlert, ...updatedAlerts];
+          // Filter out previous instances of this alert type before inserting new active alert
+          updatedAlerts = [newAlert, ...updatedAlerts.filter((a) => a.type !== config.alertType)];
           updatedEvents = [
             {
-              id: `evt_iv_${now}`,
+              id: `evt_${config.alertType.toLowerCase()}_${now}`,
               patientId: patient.details.id,
               bedNo: patient.details.bedNo,
               patientName: patient.details.patientName,
-              type: calculatedOutput.ivStatus,
+              type: config.alertType as PatientStatus,
               severity,
               timestamp: now,
               message: alertMsg,
@@ -531,80 +626,196 @@ export function MonitoringProvider({ children }: { children: ReactNode }) {
           ];
           hasNewAlarm = true;
 
-          // Dispatch browser notification
           sendBrowserNotification(
-            `Bed ${patient.details.bedNo} – ${calculatedOutput.ivStatus === 'CRITICAL_VOLUME' ? 'Critical IV Alert' : 'IV Warning'}`,
+            `Bed ${patient.details.bedNo} – ${config.alertType.replace(/_/g, ' ')}`,
             {
               body: `Patient: ${patient.details.patientName} | ${alertMsg}`,
-              tag: `iv_${patient.details.id}`,
+              tag: `${config.alertType.toLowerCase()}_${patient.details.id}`,
             }
           );
-        }
-      }
-
-      // 2. Pulse Alerts (60-100 is NORMAL; <60 or >100 is ABNORMAL; NO_PULSE_DATA does not generate alert)
-      if (calculatedOutput.pulseStatus === 'ABNORMAL' && calculatedOutput.heartRate > 0) {
-        const isCritical = calculatedOutput.heartRate < 45 || calculatedOutput.heartRate > 130;
-        const severity = isCritical ? 'CRITICAL' : 'WARNING';
-        const type: PatientStatus = calculatedOutput.heartRate < 60 ? 'LOW_PULSE' : 'HIGH_PULSE';
-
-        const recentPulseAlert = updatedAlerts.find(
-          (a) => a.category === 'PULSE' && !a.acknowledged && now - a.timestamp < 120000
-        );
-
-        if (!recentPulseAlert) {
-          const newPulseAlert: Alert = {
-            id: `alt_pulse_${now}_${Math.random().toString(36).substring(2, 6)}`,
-            patientId: patient.details.id,
-            bedNo: patient.details.bedNo,
-            patientName: patient.details.patientName,
-            type,
-            severity,
-            category: 'PULSE',
-            timestamp: now,
-            message: `PULSE ALERT: ${calculatedOutput.heartRate < 60 ? 'Bradycardia' : 'Tachycardia'} (${calculatedOutput.heartRate} BPM)`,
-            suggestedAction: 'Check patient vitals and pulse sensor placement.',
-            acknowledged: false,
-            readingsSnapshot: {
-              volume: calculatedOutput.remainingVolume,
-              remainingPercentage: calculatedOutput.remainingPercentage,
-              dripRate: calculatedOutput.dripRate,
-              flowRate: calculatedOutput.flowRate,
-              etaMinutes: etaMin,
-              pulseRate: calculatedOutput.heartRate,
-            },
-          };
-
-          updatedAlerts = [newPulseAlert, ...updatedAlerts];
+        } else if (res.type === 'CONTINUING_ACTIVE') {
+          // Condition continues ABNORMAL -> ABNORMAL: Update snapshot telemetry, DO NOT create new popup or alarm.
+          updatedAlerts = updatedAlerts.map((a) => {
+            if (a.type === config.alertType && !a.acknowledged) {
+              return {
+                ...a,
+                severity: config.getSeverity(),
+                message: config.getMessage(),
+                readingsSnapshot: {
+                  volume: calculatedOutput.remainingVolume,
+                  remainingPercentage: calculatedOutput.remainingPercentage,
+                  dripRate: calculatedOutput.dripRate,
+                  flowRate: calculatedOutput.flowRate,
+                  etaMinutes: etaMin,
+                  pulseRate: calculatedOutput.heartRate > 0 ? calculatedOutput.heartRate : null,
+                },
+              };
+            }
+            return a;
+          });
+        } else if (res.type === 'RECTIFIED') {
+          // Edge Transition ABNORMAL -> NORMAL: Reset alert state (active=false, acknowledged=false) and mark alert as resolved.
+          updatedAlerts = updatedAlerts.map((a) =>
+            a.type === config.alertType && !a.acknowledged
+              ? { ...a, acknowledged: true, acknowledgedAt: now }
+              : a
+          );
           updatedEvents = [
             {
-              id: `evt_pulse_${now}`,
+              id: `evt_resolved_${config.alertType.toLowerCase()}_${now}_${Math.random().toString(36).substring(2, 6)}`,
               patientId: patient.details.id,
               bedNo: patient.details.bedNo,
               patientName: patient.details.patientName,
-              type: 'PULSE_ALERT',
-              severity,
+              type: `${config.alertType}_RESOLVED` as PatientStatus,
+              severity: 'INFO',
               timestamp: now,
-              message: `Pulse Alert: ${calculatedOutput.heartRate} BPM (${type})`,
+              message: `Condition Normal: ${config.alertType.replace(/_/g, ' ')} returned to safe range.`,
             },
             ...updatedEvents,
           ];
-          hasNewAlarm = true;
-
-          // Dispatch browser notification
-          sendBrowserNotification(
-            `Bed ${patient.details.bedNo} – Abnormal Heart Rate`,
-            {
-              body: `Patient: ${patient.details.patientName} | Heart rate: ${calculatedOutput.heartRate} BPM (${calculatedOutput.heartRate < 60 ? 'Bradycardia' : 'Tachycardia'})`,
-              tag: `pulse_${patient.details.id}`,
-            }
-          );
         }
+      });
+
+      // 3. ESP32 Disconnected Alert
+      const isEspDisconnected =
+        newInput.esp32Status === 'DISCONNECTED' &&
+        (newInput.lastUpdated > 0 || (patient.alerts && patient.alerts.length > 0));
+      const espRes = alertStateMachine.evaluateCondition(patientId, 'ESP32_DISCONNECTED', isEspDisconnected);
+
+      if (espRes.type === 'TRIGGER') {
+        const espMsg = `ESP32 Disconnected: Lost telemetry from sensor module for Bed ${patient.details.bedNo}.`;
+        const alertId = `alt_esp_${now}_${Math.random().toString(36).substring(2, 6)}`;
+        espRes.entry.alertId = alertId;
+
+        const newEspAlert: Alert = {
+          id: alertId,
+          patientId: patient.details.id,
+          bedNo: patient.details.bedNo,
+          patientName: patient.details.patientName,
+          type: 'ESP32_DISCONNECTED',
+          severity: 'CRITICAL',
+          category: 'SYSTEM',
+          timestamp: now,
+          message: espMsg,
+          suggestedAction: 'Verify ESP32 power, Wi-Fi connectivity, and sensor wiring.',
+          acknowledged: false,
+          readingsSnapshot: {
+            volume: calculatedOutput.remainingVolume,
+            remainingPercentage: calculatedOutput.remainingPercentage,
+            dripRate: calculatedOutput.dripRate,
+            flowRate: calculatedOutput.flowRate,
+            etaMinutes: etaMin,
+            pulseRate: calculatedOutput.heartRate > 0 ? calculatedOutput.heartRate : null,
+          },
+        };
+
+        updatedAlerts = [newEspAlert, ...updatedAlerts];
+        updatedEvents = [
+          {
+            id: `evt_esp_${now}`,
+            patientId: patient.details.id,
+            bedNo: patient.details.bedNo,
+            patientName: patient.details.patientName,
+            type: 'ESP32_DISCONNECTED',
+            severity: 'CRITICAL',
+            timestamp: now,
+            message: espMsg,
+          },
+          ...updatedEvents,
+        ];
+        hasNewAlarm = true;
+
+        sendBrowserNotification(
+          `Bed ${patient.details.bedNo} – ESP32 Disconnected`,
+          {
+            body: `Patient: ${patient.details.patientName} | ${espMsg}`,
+            tag: `esp_${patient.details.id}`,
+          }
+        );
+      } else if (espRes.type === 'RECTIFIED') {
+        updatedAlerts = updatedAlerts.map((a) =>
+          a.type === 'ESP32_DISCONNECTED' && !a.acknowledged ? { ...a, acknowledged: true, acknowledgedAt: now } : a
+        );
+        updatedEvents = [
+          {
+            id: `evt_esp_resolved_${now}_${Math.random().toString(36).substring(2, 6)}`,
+            patientId: patient.details.id,
+            bedNo: patient.details.bedNo,
+            patientName: patient.details.patientName,
+            type: 'ESP32_RECONNECTED',
+            severity: 'INFO',
+            timestamp: now,
+            message: `ESP32 Reconnected: Telemetry restored for Bed ${patient.details.bedNo}.`,
+          },
+          ...updatedEvents,
+        ];
+      }
+
+      // 4. Sensor Unstable / Hardware Problem Alert
+      const isSensorInvalid = sensorQuality === 'INVALID';
+      const sensRes = alertStateMachine.evaluateCondition(patientId, 'SENSOR_UNSTABLE', isSensorInvalid);
+
+      if (sensRes.type === 'TRIGGER') {
+        const sensorMsg = `Sensor Problem: Load cell reading unstable or invalid on Bed ${patient.details.bedNo}.`;
+        const alertId = `alt_sens_${now}_${Math.random().toString(36).substring(2, 6)}`;
+        sensRes.entry.alertId = alertId;
+
+        const newSensorAlert: Alert = {
+          id: alertId,
+          patientId: patient.details.id,
+          bedNo: patient.details.bedNo,
+          patientName: patient.details.patientName,
+          type: 'SENSOR_UNSTABLE',
+          severity: 'WARNING',
+          category: 'SYSTEM',
+          timestamp: now,
+          message: sensorMsg,
+          suggestedAction: 'Inspect load cell physical mounting and ensure no cable strain.',
+          acknowledged: false,
+          readingsSnapshot: {
+            volume: calculatedOutput.remainingVolume,
+            remainingPercentage: calculatedOutput.remainingPercentage,
+            dripRate: calculatedOutput.dripRate,
+            flowRate: calculatedOutput.flowRate,
+            etaMinutes: etaMin,
+            pulseRate: calculatedOutput.heartRate > 0 ? calculatedOutput.heartRate : null,
+          },
+        };
+
+        updatedAlerts = [newSensorAlert, ...updatedAlerts];
+        hasNewAlarm = true;
+
+        sendBrowserNotification(
+          `Bed ${patient.details.bedNo} – Sensor Warning`,
+          {
+            body: `Patient: ${patient.details.patientName} | ${sensorMsg}`,
+            tag: `sens_${patient.details.id}`,
+          }
+        );
+      } else if (sensRes.type === 'RECTIFIED') {
+        updatedAlerts = updatedAlerts.map((a) =>
+          a.type === 'SENSOR_UNSTABLE' && !a.acknowledged ? { ...a, acknowledged: true, acknowledgedAt: now } : a
+        );
+        updatedEvents = [
+          {
+            id: `evt_sens_resolved_${now}_${Math.random().toString(36).substring(2, 6)}`,
+            patientId: patient.details.id,
+            bedNo: patient.details.bedNo,
+            patientName: patient.details.patientName,
+            type: 'SENSOR_STABILIZED',
+            severity: 'INFO',
+            timestamp: now,
+            message: `Sensor Stabilized: Load cell readings returned to valid range for Bed ${patient.details.bedNo}.`,
+          },
+          ...updatedEvents,
+        ];
       }
 
       if (hasNewAlarm) {
         playThrottledChime(
           calculatedOutput.ivStatus === 'CRITICAL_VOLUME' ||
+          calculatedOutput.ivStatus === 'POSSIBLE_OCCLUSION' ||
+          newInput.esp32Status === 'DISCONNECTED' ||
           calculatedOutput.heartRate < 45 ||
           calculatedOutput.heartRate > 130
             ? 'CRITICAL'
@@ -771,6 +982,8 @@ export function MonitoringProvider({ children }: { children: ReactNode }) {
               ? remoteData.stopTime
               : p.details.stopTime;
 
+          const remoteAI = normalizeAIPrediction(remoteData.AI || remoteData.ai);
+
           const updatedPatientWithDetails: Patient = {
             ...p,
             details: {
@@ -779,6 +992,7 @@ export function MonitoringProvider({ children }: { children: ReactNode }) {
               monitoring: isRemoteMonitoring,
               stopTime: isRemoteMonitoring ? null : remoteStopTime,
             },
+            ai: remoteAI || p.ai,
           };
 
           // Extract strict INPUT
@@ -875,16 +1089,8 @@ export function MonitoringProvider({ children }: { children: ReactNode }) {
       return pA - pB;
     });
 
-  const criticalAlertQueue = activeAlerts.filter(
-    (a) =>
-      a.severity === 'CRITICAL' ||
-      a.type === 'CRITICAL_VOLUME' ||
-      a.type === 'POSSIBLE_OCCLUSION' ||
-      a.type === 'POSSIBLE_EXCESSIVE_FLOW' ||
-      a.type === 'LOW_PULSE' ||
-      a.type === 'HIGH_PULSE' ||
-      a.category === 'PULSE'
-  );
+  // All unacknowledged alerts for actively monitored patients are delivered to the emergency popup queue
+  const criticalAlertQueue = activeAlerts;
 
   // Overall ESP32 Sensor Network Status based on active patients' latest heartbeat
   const now = Date.now();
@@ -1069,8 +1275,81 @@ export function MonitoringProvider({ children }: { children: ReactNode }) {
     [calibrations]
   );
 
+  const updatePatientDetails = useCallback(
+    async (
+      patientId: string,
+      data: {
+        bedNo: string;
+        patientName: string;
+        fluidType: IVFluidType;
+        initialVolume: number;
+        prescribedDripRate: number;
+        dropFactor: number;
+        notes?: string;
+      }
+    ): Promise<void> => {
+      // Step 1: Validation
+      const cleanBed = (data.bedNo || '').trim();
+      const cleanName = (data.patientName || '').trim();
+      if (!cleanBed) {
+        throw new Error('Bed Number is required.');
+      }
+      if (!cleanName) {
+        throw new Error('Patient Name is required.');
+      }
+      if (!data.initialVolume || isNaN(data.initialVolume) || data.initialVolume <= 0 || data.initialVolume > 5000) {
+        throw new Error('Please enter a valid initial IV volume (10 to 5000 mL).');
+      }
+      if (!data.prescribedDripRate || isNaN(data.prescribedDripRate) || data.prescribedDripRate <= 0 || data.prescribedDripRate > 200) {
+        throw new Error('Please enter a valid prescribed drip rate (1 to 200 dpm).');
+      }
+      const dropFactor = data.dropFactor && !isNaN(data.dropFactor) && data.dropFactor > 0 ? data.dropFactor : 20;
+
+      // Find target patient
+      const existing = patients.find((p) => p?.details?.id === patientId);
+      if (!existing) {
+        throw new Error('Patient record not found.');
+      }
+
+      const updatedDetails: PatientDetails = {
+        ...existing.details,
+        bedNo: cleanBed,
+        patientName: cleanName,
+        fluidType: data.fluidType,
+        initialVolume: data.initialVolume,
+        prescribedDripRate: data.prescribedDripRate,
+        dropFactor,
+        notes: data.notes !== undefined ? data.notes : existing.details.notes,
+      };
+
+      // Step 2: Write updated details to Firebase RTDB
+      await updatePatientDetailsInFirebase(patientId, updatedDetails);
+
+      // Step 3: Update local state while preserving all monitoring data, sensor inputs, logs, and alerts
+      setPatients((prev) =>
+        prev.map((p) => {
+          if (p?.details?.id === patientId) {
+            const reprocessed = processPatientData(
+              {
+                ...p,
+                details: updatedDetails,
+              },
+              p.input
+            );
+            return reprocessed;
+          }
+          return p;
+        })
+      );
+    },
+    [patients, processPatientData]
+  );
+
   const stopMonitoring = useCallback(async (patientId: string) => {
     const now = Date.now();
+    // Clear state-transition condition tracking for this stopped patient
+    alertStateMachineRef.current.resetPatient(patientId);
+
     setPatients((prev) =>
       prev.map((p) => {
         if (p?.details?.id === patientId) {
@@ -1165,15 +1444,81 @@ export function MonitoringProvider({ children }: { children: ReactNode }) {
 
   const acknowledgeAlert = useCallback((alertId: string) => {
     playAlertChime('ACK');
+    alertStateMachineRef.current.acknowledgeById(alertId);
+
     setPatients((prev) =>
-      prev.map((p) => ({
-        ...p,
-        alerts: p.alerts.map((a) =>
-          a.id === alertId ? { ...a, acknowledged: true, acknowledgedAt: Date.now() } : a
-        ),
-      }))
+      prev.map((p) => {
+        const targetAlert = (p.alerts || []).find((a) => a.id === alertId);
+        if (targetAlert) {
+          alertStateMachineRef.current.acknowledge(p.details.id, targetAlert.type);
+        }
+        return {
+          ...p,
+          alerts: (p.alerts || []).map((a) =>
+            a.id === alertId ? { ...a, acknowledged: true, acknowledgedAt: Date.now() } : a
+          ),
+        };
+      })
     );
-  }, []);
+  }, [playAlertChime]);
+
+  const savePatientCalibration = useCallback(
+    async (
+      patientId: string,
+      tareWeight: number,
+      calibrationFactor: number,
+      irSensitivity: number = 8
+    ) => {
+      const now = Date.now();
+      const targetPatient = patients.find((p) => p?.details?.id === patientId);
+      const bedNo = targetPatient?.details?.bedNo;
+
+      // 1. Update calibrations dictionary state
+      if (bedNo) {
+        setCalibrations((prev) => ({
+          ...prev,
+          [bedNo]: {
+            bedNo,
+            tareWeight,
+            calibrationFactor,
+            irSensitivity,
+            lastCalibrated: now,
+          },
+        }));
+      }
+
+      // 2. Write to Firebase at /patients/{patientId}/calibration and update details in Firebase
+      await writePatientCalibrationToFirebase(patientId, {
+        tareWeight,
+        calibrationFactor,
+        irSensitivity,
+        lastCalibrated: now,
+        bedNo,
+      });
+
+      // 3. Immediately update patient in local state & reprocess patient calculations with new tare/calibration factor
+      setPatients((prev) =>
+        prev.map((p) => {
+          if (p?.details?.id === patientId) {
+            const updatedDetails: PatientDetails = {
+              ...p.details,
+              tareWeight,
+              calibrationFactor,
+            };
+            return processPatientData(
+              {
+                ...p,
+                details: updatedDetails,
+              },
+              p.input
+            );
+          }
+          return p;
+        })
+      );
+    },
+    [patients, processPatientData]
+  );
 
   const saveBedCalibration = useCallback(
     (
@@ -1182,6 +1527,7 @@ export function MonitoringProvider({ children }: { children: ReactNode }) {
       calibrationFactor: number,
       irSensitivity: number
     ) => {
+      const now = Date.now();
       setCalibrations((prev) => ({
         ...prev,
         [bedNo]: {
@@ -1189,11 +1535,24 @@ export function MonitoringProvider({ children }: { children: ReactNode }) {
           tareWeight,
           calibrationFactor,
           irSensitivity,
-          lastCalibrated: Date.now(),
+          lastCalibrated: now,
         },
       }));
+
+      // Find any active patient assigned to this bed and sync calibration
+      const matchingPatient = patients.find(
+        (p) => String(p?.details?.bedNo).toLowerCase() === String(bedNo).toLowerCase()
+      );
+      if (matchingPatient?.details?.id) {
+        savePatientCalibration(
+          matchingPatient.details.id,
+          tareWeight,
+          calibrationFactor,
+          irSensitivity
+        );
+      }
     },
-    []
+    [patients, savePatientCalibration]
   );
 
   const updateFirebaseSettings = useCallback((config: Partial<FirebaseConfig>) => {
@@ -1207,7 +1566,8 @@ export function MonitoringProvider({ children }: { children: ReactNode }) {
     // 1. Wipe Firebase Realtime Database
     const res = await deleteAllFirebaseData();
 
-    // 2. Wipe Local State & Storage
+    // 2. Wipe Local State, Condition Tracker & Storage
+    alertStateMachineRef.current.clear();
     setPatients([]);
     setCalibrations({});
     setCurrentPatientId(null);
@@ -1239,10 +1599,12 @@ export function MonitoringProvider({ children }: { children: ReactNode }) {
         selectPatient,
         toggleAudioAlerts,
         addPatient,
+        updatePatientDetails,
         stopMonitoring,
         startMonitoring,
         acknowledgeAlert,
         saveBedCalibration,
+        savePatientCalibration,
         updateFirebaseSettings,
         wipeAllData,
       }}

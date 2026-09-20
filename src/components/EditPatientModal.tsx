@@ -1,25 +1,29 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { IVFluidType } from '../types';
-import { PlusCircle, X, AlertCircle, CheckCircle, Loader2, Calculator } from 'lucide-react';
+import { IVFluidType, Patient } from '../types';
+import { Pencil, X, AlertCircle, CheckCircle, Loader2, Calculator } from 'lucide-react';
 import { calculatePrescribedDripRate } from '../utils/calculations';
 
-interface AddPatientModalProps {
+interface EditPatientModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onAdd: (data: {
-    bedNo: string;
-    patientName: string;
-    fluidType: IVFluidType;
-    initialVolume: number;
-    prescribedInfusionTimeHours?: number;
-    prescribedInfusionTimeMinutes?: number;
-    prescribedDripRate: number;
-    dropFactor: number;
-    notes?: string;
-  }) => Promise<string>;
+  patient: Patient | null;
+  onSave: (
+    patientId: string,
+    data: {
+      bedNo: string;
+      patientName: string;
+      fluidType: IVFluidType;
+      initialVolume: number;
+      prescribedInfusionTimeHours?: number;
+      prescribedInfusionTimeMinutes?: number;
+      prescribedDripRate: number;
+      dropFactor: number;
+      notes?: string;
+    }
+  ) => Promise<void>;
 }
 
-export function AddPatientModal({ isOpen, onClose, onAdd }: AddPatientModalProps) {
+export function EditPatientModal({ isOpen, onClose, patient, onSave }: EditPatientModalProps) {
   const [bedNo, setBedNo] = useState('');
   const [patientName, setPatientName] = useState('');
   const [fluidType, setFluidType] = useState<IVFluidType>('Normal Saline');
@@ -36,7 +40,45 @@ export function AddPatientModal({ isOpen, onClose, onAdd }: AddPatientModalProps
   const [isSubmitting, setIsSubmitting] = useState(false);
   const isSubmittingRef = useRef(false);
 
-  // Calculated rate using formula: (Volume * DropFactor) / TotalTimeMinutes
+  useEffect(() => {
+    if (patient && isOpen) {
+      setBedNo(patient.details.bedNo || '');
+      setPatientName(patient.details.patientName || '');
+      setFluidType(patient.details.fluidType || 'Normal Saline');
+      setInitialVolume(String(patient.details.initialVolume ?? 100));
+      
+      const hrs = patient.details.prescribedInfusionTimeHours ?? 1;
+      const mins = patient.details.prescribedInfusionTimeMinutes ?? 0;
+      setInfusionHours(String(hrs));
+      setInfusionMinutes(String(mins));
+
+      setDropFactor(String(patient.details.dropFactor ?? 20));
+      setNotes(patient.details.notes || '');
+
+      const currentPrescribed = patient.details.prescribedDripRate ?? 33.33;
+      const calculated = calculatePrescribedDripRate(
+        patient.details.initialVolume ?? 100,
+        patient.details.dropFactor ?? 20,
+        hrs,
+        mins
+      );
+
+      // If user had a custom rate set before
+      if (Math.abs(currentPrescribed - calculated) > 0.5) {
+        setUseCustomRate(true);
+        setCustomPrescribedRate(String(Math.round(currentPrescribed)));
+      } else {
+        setUseCustomRate(false);
+        setCustomPrescribedRate('');
+      }
+
+      setError(null);
+      setSuccessMessage(null);
+    }
+  }, [patient, isOpen]);
+
+  if (!isOpen || !patient) return null;
+
   const volNum = parseFloat(initialVolume) || 0;
   const hoursNum = parseFloat(infusionHours) || 0;
   const minsNum = parseFloat(infusionMinutes) || 0;
@@ -47,8 +89,6 @@ export function AddPatientModal({ isOpen, onClose, onAdd }: AddPatientModalProps
   const effectivePrescribedDpm = useCustomRate && customPrescribedRate !== ''
     ? parseFloat(customPrescribedRate) || 0
     : autoCalculatedDpm;
-
-  if (!isOpen) return null;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -82,7 +122,8 @@ export function AddPatientModal({ isOpen, onClose, onAdd }: AddPatientModalProps
     try {
       isSubmittingRef.current = true;
       setIsSubmitting(true);
-      await onAdd({
+
+      await onSave(patient.details.id, {
         bedNo: bedNo.trim(),
         patientName: patientName.trim(),
         fluidType,
@@ -94,22 +135,14 @@ export function AddPatientModal({ isOpen, onClose, onAdd }: AddPatientModalProps
         notes: notes.trim() || undefined,
       });
 
-      setSuccessMessage('Patient initialized with calculated drip rate!');
+      setSuccessMessage('Patient details updated successfully');
       setTimeout(() => {
-        setBedNo('');
-        setPatientName('');
-        setInitialVolume('100');
-        setInfusionHours('1');
-        setInfusionMinutes('0');
-        setDropFactor('20');
-        setCustomPrescribedRate('');
-        setUseCustomRate(false);
-        setNotes('');
         setSuccessMessage(null);
         onClose();
       }, 600);
-    } catch (err) {
-      setError((err as Error).message || 'Failed to initialize patient');
+    } catch (err: any) {
+      const msg = err?.message || 'Unable to update patient details';
+      setError(msg.startsWith('Unable to update') ? msg : `Unable to update patient details: ${msg}`);
     } finally {
       isSubmittingRef.current = false;
       setIsSubmitting(false);
@@ -123,15 +156,17 @@ export function AddPatientModal({ isOpen, onClose, onAdd }: AddPatientModalProps
         <div className="bg-slate-900 text-white px-6 py-4 flex items-center justify-between shrink-0">
           <div className="flex items-center gap-2.5">
             <div className="p-2 bg-sky-500/20 text-sky-400 rounded-lg">
-              <PlusCircle className="w-5 h-5" />
+              <Pencil className="w-5 h-5" />
             </div>
             <div>
-              <h2 className="text-lg font-bold">ADD PATIENT</h2>
-              <p className="text-xs text-slate-400">Initialize Smart IV Infusion & Prescribed Drip Rate</p>
+              <h2 className="text-lg font-bold uppercase tracking-tight">EDIT PATIENT DETAILS</h2>
+              <p className="text-xs text-slate-400">Update record for Bed {patient.details.bedNo}</p>
             </div>
           </div>
           <button
+            type="button"
             onClick={onClose}
+            disabled={isSubmitting}
             className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
           >
             <X className="w-5 h-5" />
@@ -163,7 +198,6 @@ export function AddPatientModal({ isOpen, onClose, onAdd }: AddPatientModalProps
                 type="text"
                 value={bedNo}
                 onChange={(e) => setBedNo(e.target.value)}
-                placeholder="e.g. 168, ICU-04"
                 className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm font-medium focus:ring-2 focus:ring-sky-500 focus:outline-none"
                 required
               />
@@ -177,7 +211,6 @@ export function AddPatientModal({ isOpen, onClose, onAdd }: AddPatientModalProps
                 type="text"
                 value={patientName}
                 onChange={(e) => setPatientName(e.target.value)}
-                placeholder="e.g. Patient 168"
                 className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm font-medium focus:ring-2 focus:ring-sky-500 focus:outline-none"
                 required
               />
@@ -204,7 +237,7 @@ export function AddPatientModal({ isOpen, onClose, onAdd }: AddPatientModalProps
 
             <div>
               <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
-                Total IV Volume (mL) *
+                Initial IV Volume (mL) *
               </label>
               <div className="relative">
                 <input
@@ -329,7 +362,7 @@ export function AddPatientModal({ isOpen, onClose, onAdd }: AddPatientModalProps
 
           <div>
             <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
-              Clinical Notes (Optional)
+              Clinical Notes
             </label>
             <input
               type="text"
@@ -358,12 +391,12 @@ export function AddPatientModal({ isOpen, onClose, onAdd }: AddPatientModalProps
               {isSubmitting ? (
                 <>
                   <Loader2 className="w-4 h-4 animate-spin" />
-                  <span>INITIALIZING...</span>
+                  <span>SAVING...</span>
                 </>
               ) : (
                 <>
                   <CheckCircle className="w-4 h-4" />
-                  <span>START MONITORING</span>
+                  <span>SAVE CHANGES</span>
                 </>
               )}
             </button>

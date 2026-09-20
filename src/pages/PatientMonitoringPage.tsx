@@ -1,10 +1,12 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useMonitoring } from '../context/MonitoringContext';
 import { IVBottle } from '../components/IVBottle';
 import { StatusBadge, PulseStatusBadge } from '../components/StatusBadge';
 import { VolumeChart } from '../components/VolumeChart';
 import { DripRateChart } from '../components/DripRateChart';
 import { PulseRateChart } from '../components/PulseRateChart';
+import { AIInfusionCard } from '../components/AIInfusionCard';
+import { EditPatientModal } from '../components/EditPatientModal';
 import { formatETA, getPulseStatusTheme } from '../utils/calculations';
 import {
   ArrowLeft,
@@ -20,6 +22,7 @@ import {
   Scale,
   Eye,
   Heart,
+  Pencil,
 } from 'lucide-react';
 
 interface PatientMonitoringPageProps {
@@ -28,7 +31,8 @@ interface PatientMonitoringPageProps {
 }
 
 export function PatientMonitoringPage({ onBack, onOpenStopModal }: PatientMonitoringPageProps) {
-  const { patients, currentPatientId, startMonitoring } = useMonitoring();
+  const { patients, currentPatientId, startMonitoring, updatePatientDetails } = useMonitoring();
+  const [isEditModalOpen, setIsEditModalOpen] = useState(false);
 
   const patient = patients.find((p) => p?.details?.id === currentPatientId);
 
@@ -54,8 +58,8 @@ export function PatientMonitoringPage({ onBack, onOpenStopModal }: PatientMonito
   const remainingPercentage = isStopped
     ? (output?.remainingPercentage ?? 0)
     : Math.min(100, Math.max(0, output?.remainingPercentage ?? 0));
-  const dripRate = isStopped ? 0 : (output?.dripRate ?? 0);
-  const flowRate = isStopped ? 0 : (output?.flowRate ?? 0);
+  const dripRate = isStopped ? 0 : (output?.dripRate !== undefined && output?.dripRate !== null ? output.dripRate : null);
+  const flowRate = isStopped ? 0 : (output?.flowRate !== undefined && output?.flowRate !== null ? output.flowRate : null);
   const dropCount = isStopped ? (output?.dropCount ?? 0) : (output?.dropCount ?? 0);
   const eta = isStopped ? '--' : (output?.eta ?? '--');
   const heartRate = isStopped ? null : (output?.heartRate ?? null);
@@ -63,7 +67,7 @@ export function PatientMonitoringPage({ onBack, onOpenStopModal }: PatientMonito
   const esp32Status = isStopped ? 'DISCONNECTED' : (input?.esp32Status ?? 'DISCONNECTED');
   const lastUpdated = input?.lastUpdated ?? 0;
 
-  const isNoData = !isStopped && (output?.ivStatus === 'NO_DATA' && remainingVolume === 0 && dripRate === 0 && !heartRate);
+  const isNoData = !isStopped && (output?.ivStatus === 'NO_DATA' && remainingVolume === 0 && (dripRate === 0 || dripRate === null) && !heartRate);
 
   const pct = remainingPercentage;
 
@@ -108,6 +112,14 @@ export function PatientMonitoringPage({ onBack, onOpenStopModal }: PatientMonito
                 </h1>
                 <StatusBadge status={isStopped ? 'MONITORING_STOPPED' : (output?.ivStatus || 'NORMAL')} size="sm" />
                 <PulseStatusBadge status={pulseStatus} size="sm" />
+                <button
+                  onClick={() => setIsEditModalOpen(true)}
+                  className="px-2.5 py-1 text-xs font-bold text-sky-200 hover:text-white bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg transition-colors flex items-center gap-1.5 ml-1"
+                  title="Edit Patient Details"
+                >
+                  <Pencil className="w-3.5 h-3.5 text-sky-400" />
+                  <span>Edit Patient</span>
+                </button>
               </div>
               <p className="text-xs text-slate-400 mt-0.5">
                 {details.fluidType} • Initial {details.initialVolume} mL • {isStopped ? 'Infusion Stopped' : `Started ${durHours}h ${durMins}m ago`}
@@ -270,50 +282,94 @@ export function PatientMonitoringPage({ onBack, onOpenStopModal }: PatientMonito
             {/* Prescribed vs Actual Rate Bar */}
             <div className="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 mt-4 space-y-1.5">
               <div className="flex justify-between text-xs">
+                <span className="text-slate-500">HX711 Load Cell Weight:</span>
+                <span className="font-bold text-slate-800">
+                  {input?.loadCell?.weight !== undefined && input?.loadCell?.weight !== null
+                    ? `${input.loadCell.weight} g`
+                    : 'NO DATA'}
+                </span>
+              </div>
+              {input?.loadCell?.rawValue !== undefined && input?.loadCell?.rawValue !== null && (
+                <div className="flex justify-between text-xs">
+                  <span className="text-slate-500">Raw ADC Diagnostic:</span>
+                  <span className="font-mono text-xs font-bold text-sky-700">{input.loadCell.rawValue}</span>
+                </div>
+              )}
+              <div className="flex justify-between text-xs">
                 <span className="text-slate-500">Prescribed Rate:</span>
-                <span className="font-bold text-slate-800">{details.prescribedDripRate} dpm</span>
+                <span className="font-bold text-slate-800">{Math.round(details.prescribedDripRate)} dpm</span>
               </div>
               <div className="flex justify-between text-xs">
                 <span className="text-slate-500">Actual IR Drip Rate:</span>
                 <span
                   className={`font-bold ${
-                    dripRate === 0
+                    dripRate === 0 || dripRate === null
                       ? 'text-slate-500'
-                      : Math.abs(dripRate - details.prescribedDripRate) > 10
-                      ? 'text-amber-600'
+                      : Math.abs(dripRate - details.prescribedDripRate) > (details.prescribedDripRate * 0.2)
+                      ? 'text-rose-600 font-extrabold'
                       : 'text-emerald-700'
                   }`}
                 >
-                  {dripRate > 0 ? `${dripRate} dpm` : '0 dpm'}
+                  {dripRate !== null && dripRate !== undefined ? `${Math.round(dripRate)} dpm` : '--'}
                 </span>
               </div>
               <div className="flex justify-between text-xs">
                 <span className="text-slate-500">Drop Factor:</span>
                 <span className="font-semibold text-slate-700">{details.dropFactor} drops/mL</span>
               </div>
+              <div className="flex justify-between text-xs border-t border-slate-100 pt-1.5">
+                <span className="text-slate-500">Infused Volume:</span>
+                <span className="font-bold text-slate-800">{output?.infusedVolumeML !== undefined ? `${output.infusedVolumeML} mL` : '--'}</span>
+              </div>
+              <div className="flex justify-between text-xs">
+                <span className="text-slate-500">Prescribed Flow Rate:</span>
+                <span className="font-bold text-slate-800">{output?.prescribedFlowRateMLH !== undefined ? `${output.prescribedFlowRateMLH} mL/h` : '--'}</span>
+              </div>
+              <div className="flex justify-between text-xs">
+                <span className="text-slate-500">Flow Deviation:</span>
+                <span className={`font-bold ${
+                  typeof output?.flowDeviationPercentage === 'number'
+                    ? Math.abs(output.flowDeviationPercentage as number) > 15
+                      ? 'text-rose-600'
+                      : 'text-emerald-700'
+                    : 'text-slate-600'
+                }`}>
+                  {typeof output?.flowDeviationPercentage === 'number'
+                    ? `${output.flowDeviationPercentage > 0 ? '+' : ''}${output.flowDeviationPercentage}%`
+                    : '--'}
+                </span>
+              </div>
+              <div className="flex justify-between text-xs">
+                <span className="text-slate-500">Flow Status:</span>
+                <span className={`font-bold ${
+                  output?.ivStatus === 'NORMAL' || output?.flowStatus === 'Normal Flow'
+                    ? 'text-emerald-700'
+                    : 'text-rose-600'
+                }`}>
+                  {output?.flowStatus || '--'}
+                </span>
+              </div>
             </div>
           </div>
 
           {/* Right Column: Telemetry Cards (IV + Pulse) & Hardware Info (7 Cols) */}
           <div className="lg:col-span-7 flex flex-col gap-4">
-            {/* IV Telemetry Grid (6 Metrics: Volume, Remaining %, Drip Rate, Flow Rate, Total Drops, ETA) */}
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+            {/* IV Telemetry Grid (7 Metrics: Volume, Remaining %, Prescribed DPM, Actual DPM, Flow Rate, Total Drops, ETA) */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
               {/* Metric 1: IV Volume */}
-              <div className="bg-white border border-slate-200 rounded-xl p-3.5 shadow-xs">
-                <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">IV VOLUME</div>
-                <div className="text-2xl font-black text-slate-900 mt-1">
-                  {remainingVolume > 0 && remainingVolume < 10
-                    ? `${remainingVolume.toFixed(1)} mL`
-                    : `${Math.round(remainingVolume)} mL`}
+              <div className="bg-white border border-slate-200 rounded-xl p-3 shadow-xs">
+                <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">IV VOLUME</div>
+                <div className="text-xl font-black text-slate-900 mt-1">
+                  {Math.round(remainingVolume)} mL
                 </div>
-                <div className="text-[11px] text-slate-500">of {details.initialVolume} mL</div>
+                <div className="text-[10px] text-slate-500">of {details.initialVolume} mL</div>
               </div>
 
               {/* Metric 2: Remaining % */}
-              <div className="bg-white border border-slate-200 rounded-xl p-3.5 shadow-xs">
-                <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">REMAINING</div>
+              <div className="bg-white border border-slate-200 rounded-xl p-3 shadow-xs">
+                <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">REMAINING</div>
                 <div
-                  className={`text-2xl font-black mt-1 ${
+                  className={`text-xl font-black mt-1 ${
                     pct < 10
                       ? 'text-rose-600'
                       : pct <= 20
@@ -323,43 +379,60 @@ export function PatientMonitoringPage({ onBack, onOpenStopModal }: PatientMonito
                 >
                   {Math.round(pct)}%
                 </div>
-                <div className="text-[11px] text-slate-500">Fluid level</div>
+                <div className="text-[10px] text-slate-500">Fluid level</div>
               </div>
 
-              {/* Metric 3: Drip Rate */}
-              <div className="bg-white border border-slate-200 rounded-xl p-3.5 shadow-xs">
-                <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">DRIP RATE</div>
-                <div className="text-2xl font-black text-sky-700 mt-1">
-                  {dripRate > 0 ? `${dripRate} dpm` : '0 dpm'}
+              {/* Metric 3: Prescribed Rate */}
+              <div className="bg-white border border-slate-200 rounded-xl p-3 shadow-xs">
+                <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">PRESCRIBED RATE</div>
+                <div className="text-xl font-black text-slate-800 mt-1">
+                  {Math.round(details.prescribedDripRate)} dpm
                 </div>
-                <div className="text-[11px] text-slate-500">drops/min (dpm)</div>
+                <div className="text-[10px] text-slate-500">drops/min target</div>
               </div>
 
-              {/* Metric 4: Flow Rate */}
-              <div className="bg-white border border-slate-200 rounded-xl p-3.5 shadow-xs">
-                <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">FLOW RATE</div>
-                <div className="text-2xl font-black text-teal-700 mt-1">
-                  {flowRate > 0 ? `${flowRate} mL/h` : '--'}
+              {/* Metric 4: Actual Drip Rate */}
+              <div className="bg-white border border-slate-200 rounded-xl p-3 shadow-xs">
+                <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">ACTUAL RATE</div>
+                <div
+                  className={`text-xl font-black mt-1 ${
+                    dripRate === 0 || dripRate === null
+                      ? 'text-slate-500'
+                      : dripRate > details.prescribedDripRate * 1.2
+                      ? 'text-rose-600'
+                      : 'text-sky-700'
+                  }`}
+                >
+                  {dripRate !== null && dripRate !== undefined ? `${Math.round(dripRate)} dpm` : '--'}
                 </div>
-                <div className="text-[11px] text-slate-500">mL/hour</div>
+                <div className="text-[10px] text-slate-500">IR sensor actual</div>
               </div>
 
-              {/* Metric 5: Total Drops */}
-              <div className="bg-white border border-slate-200 rounded-xl p-3.5 shadow-xs">
-                <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">TOTAL DROPS</div>
+              {/* Metric 5: Flow Rate */}
+              <div className="bg-white border border-slate-200 rounded-xl p-3 shadow-xs">
+                <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">FLOW RATE</div>
+                <div className="text-xl font-black text-teal-700 mt-1">
+                  {flowRate !== null && flowRate !== undefined ? `${Math.round(flowRate)} mL/h` : '--'}
+                </div>
+                <div className="text-[10px] text-slate-500">mL/hour</div>
+              </div>
+
+              {/* Metric 6: Total Drops */}
+              <div className="bg-white border border-slate-200 rounded-xl p-3 shadow-xs">
+                <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">TOTAL DROPS</div>
                 <div className="text-xl font-bold text-slate-800 mt-1">
                   {(dropCount || 0).toLocaleString()}
                 </div>
-                <div className="text-[11px] text-slate-500">IR Pulse Count</div>
+                <div className="text-[10px] text-slate-500">IR count</div>
               </div>
 
-              {/* Metric 6: ETA */}
-              <div className="bg-white border border-slate-200 rounded-xl p-3.5 shadow-xs">
-                <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">ETA</div>
+              {/* Metric 7: ETA */}
+              <div className="bg-white border border-slate-200 rounded-xl p-3 shadow-xs col-span-2 sm:col-span-2">
+                <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">ESTIMATED TIME (ETA)</div>
                 <div className="text-xl font-bold text-slate-800 mt-1">
                   {eta || '--'}
                 </div>
-                <div className="text-[11px] text-slate-500">HH:MM format</div>
+                <div className="text-[10px] text-slate-500">Estimated remaining time</div>
               </div>
             </div>
 
@@ -377,7 +450,6 @@ export function PatientMonitoringPage({ onBack, onOpenStopModal }: PatientMonito
                         ESP32 Live
                       </span>
                     </h3>
-                    <p className="text-[11px] text-slate-500">Real-time pulse sensor monitoring (/patients/{details.id}/output/heartRate)</p>
                   </div>
                 </div>
 
@@ -448,68 +520,18 @@ export function PatientMonitoringPage({ onBack, onOpenStopModal }: PatientMonito
               </div>
             </div>
 
-            {/* Hardware & Calibration Diagnostic Box */}
-            <div className="bg-white rounded-2xl p-4 shadow-xs border border-slate-200 space-y-3">
-              <div className="flex items-center justify-between border-b border-slate-100 pb-2">
-                <div className="flex items-center gap-1.5 text-xs font-bold text-slate-800">
-                  <Cpu className="w-4 h-4 text-sky-600" />
-                  <span>Hardware & Sensor Parameters</span>
-                </div>
-                <span className="text-[11px] text-slate-400 font-mono">
-                  Bed {details.bedNo} / {details.id}
-                </span>
-              </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
-                <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-xl">
-                  <div className="flex items-center gap-1.5 text-slate-600 font-medium mb-1">
-                    <Scale className="w-3.5 h-3.5 text-sky-600" />
-                    <span>HX711 Load Cell</span>
-                  </div>
-                  <div className="text-slate-900 font-bold">
-                    {typeof input?.loadCell === 'number'
-                      ? `${input.loadCell} g`
-                      : input?.loadCell?.weight !== undefined
-                      ? `${input.loadCell.weight} g`
-                      : 'NO DATA'}
-                  </div>
-                  <div className="text-[10px] text-slate-400 mt-0.5">
-                    Tare: {details.tareWeight || 30}g | Calib: {details.calibrationFactor || 1.0}
-                  </div>
-                </div>
-
-                <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-xl">
-                  <div className="flex items-center gap-1.5 text-slate-600 font-medium mb-1">
-                    <Eye className="w-3.5 h-3.5 text-teal-600" />
-                    <span>IR Drop Sensor</span>
-                  </div>
-                  <div className="text-slate-900 font-bold">
-                    {dripRate > 0 ? `${dripRate} dpm` : '0 dpm'}
-                  </div>
-                  <div className="text-[10px] text-slate-400 mt-0.5">
-                    Count: {dropCount} drops | Total: {dropCount}
-                  </div>
-                </div>
-
-                <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-xl">
-                  <div className="flex items-center gap-1.5 text-slate-600 font-medium mb-1">
-                    <Database className="w-3.5 h-3.5 text-emerald-600" />
-                    <span>ESP32 & Firebase</span>
-                  </div>
-                  <div className="text-slate-900 font-bold flex items-center gap-1.5">
-                    <span>ESP32:</span>
-                    <span className={esp32Status === 'CONNECTED' ? 'text-emerald-700' : 'text-slate-500'}>
-                      {esp32Status === 'CONNECTED' ? 'CONNECTED' : 'DISCONNECTED'}
-                    </span>
-                  </div>
-                  <div className="text-[10px] text-slate-400 mt-0.5 truncate" title={`patients/${details.id}/input → output`}>
-                    In: <code className="text-indigo-600 font-mono">/input</code> • Out: <code className="text-emerald-600 font-mono">/output</code>
-                  </div>
-                </div>
-              </div>
-            </div>
           </div>
         </div>
+
+        {/* AI Infusion Analysis Microservice Card */}
+        <AIInfusionCard
+          patientId={details.id}
+          ai={patient.ai}
+          input={input}
+          output={output}
+          details={details}
+        />
 
         {/* Telemetry Charts: Volume, Drip Rate, and Pulse Rate */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -587,6 +609,14 @@ export function PatientMonitoringPage({ onBack, onOpenStopModal }: PatientMonito
           </div>
         </div>
       </main>
+
+      {/* Edit Patient Modal */}
+      <EditPatientModal
+        isOpen={isEditModalOpen}
+        onClose={() => setIsEditModalOpen(false)}
+        patient={patient}
+        onSave={updatePatientDetails}
+      />
     </div>
   );
 }

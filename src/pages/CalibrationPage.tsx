@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useMonitoring } from '../context/MonitoringContext';
 import {
   ArrowLeft,
@@ -10,6 +10,7 @@ import {
   Save,
   RotateCcw,
   Sparkles,
+  User,
 } from 'lucide-react';
 
 interface CalibrationPageProps {
@@ -17,25 +18,58 @@ interface CalibrationPageProps {
 }
 
 export function CalibrationPage({ onBack }: CalibrationPageProps) {
-  const { calibrations, saveBedCalibration, patients } = useMonitoring();
+  const { calibrations, savePatientCalibration, saveBedCalibration, patients, currentPatientId } = useMonitoring();
 
-  const [selectedBed, setSelectedBed] = useState<string>('205');
-  const [tareWeightInput, setTareWeightInput] = useState<string>('30');
-  const [knownVolumeInput, setKnownVolumeInput] = useState<string>('500');
-  const [measuredWeightInput, setMeasuredWeightInput] = useState<string>('530');
-  const [irSensitivityInput, setIrSensitivityInput] = useState<number>(8);
+  // Find currently active/selected patient
+  const initialPatient =
+    patients.find((p) => p?.details?.id === currentPatientId) ||
+    patients.find((p) => p?.details?.monitoring) ||
+    patients[0];
+
+  const [selectedPatientId, setSelectedPatientId] = useState<string>(
+    initialPatient?.details?.id || ''
+  );
+
+  const selectedPatient =
+    patients.find((p) => p?.details?.id === selectedPatientId) || initialPatient;
+  const currentBedNo = selectedPatient?.details?.bedNo || '168';
+
+  const [tareWeightInput, setTareWeightInput] = useState<string>(
+    String(selectedPatient?.details?.tareWeight ?? calibrations[currentBedNo]?.tareWeight ?? 30)
+  );
+  const [knownVolumeInput, setKnownVolumeInput] = useState<string>(
+    String(selectedPatient?.details?.initialVolume ?? 500)
+  );
+  const [measuredWeightInput, setMeasuredWeightInput] = useState<string>(
+    String((selectedPatient?.details?.initialVolume ?? 500) + (selectedPatient?.details?.tareWeight ?? 30))
+  );
+  const [irSensitivityInput, setIrSensitivityInput] = useState<number>(
+    calibrations[currentBedNo]?.irSensitivity ?? 8
+  );
+
+  // Sync inputs when selected patient changes
+  useEffect(() => {
+    if (selectedPatient) {
+      const tare = selectedPatient.details.tareWeight ?? calibrations[selectedPatient.details.bedNo]?.tareWeight ?? 30;
+      const vol = selectedPatient.details.initialVolume ?? 500;
+      const factor = selectedPatient.details.calibrationFactor ?? calibrations[selectedPatient.details.bedNo]?.calibrationFactor ?? 1.0;
+      setTareWeightInput(String(tare));
+      setKnownVolumeInput(String(vol));
+      setMeasuredWeightInput(String(Math.round(tare + vol * factor)));
+      setIrSensitivityInput(calibrations[selectedPatient.details.bedNo]?.irSensitivity ?? 8);
+    }
+  }, [selectedPatientId, selectedPatient, calibrations]);
 
   // IR Drop calibration test state
   const [actualDrops, setActualDrops] = useState<number>(20);
   const [detectedDrops, setDetectedDrops] = useState<number>(20);
-  const [isCountingDrops, setIsCountingDrops] = useState<boolean>(false);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
 
   // Load current bed's saved calibration
-  const currentBedCal = calibrations[selectedBed] || {
-    bedNo: selectedBed,
-    tareWeight: 30,
-    calibrationFactor: 1.0,
+  const currentBedCal = calibrations[currentBedNo] || {
+    bedNo: currentBedNo,
+    tareWeight: selectedPatient?.details?.tareWeight ?? 30,
+    calibrationFactor: selectedPatient?.details?.calibrationFactor ?? 1.0,
     irSensitivity: 8,
     lastCalibrated: Date.now(),
   };
@@ -51,11 +85,23 @@ export function CalibrationPage({ onBack }: CalibrationPageProps) {
   const irAccuracy =
     actualDrops > 0 ? Math.min(100, Math.round((detectedDrops / actualDrops) * 100)) : 100;
 
-  const handleSaveCalibration = () => {
+  const handleSaveCalibration = async () => {
     const tare = parseFloat(tareWeightInput) || 30;
-    saveBedCalibration(selectedBed, tare, calculatedFactor, irSensitivityInput);
-    setSaveMessage(`Calibration saved successfully for Bed ${selectedBed}!`);
-    setTimeout(() => setSaveMessage(null), 3000);
+    if (selectedPatient?.details?.id) {
+      await savePatientCalibration(
+        selectedPatient.details.id,
+        tare,
+        calculatedFactor,
+        irSensitivityInput
+      );
+      setSaveMessage(
+        `Calibration saved successfully for Patient ${selectedPatient.details.patientName} (Bed ${selectedPatient.details.bedNo}) and persisted to Firebase!`
+      );
+    } else {
+      saveBedCalibration(currentBedNo, tare, calculatedFactor, irSensitivityInput);
+      setSaveMessage(`Calibration saved successfully for Bed ${currentBedNo}!`);
+    }
+    setTimeout(() => setSaveMessage(null), 4000);
   };
 
   return (
@@ -86,31 +132,30 @@ export function CalibrationPage({ onBack }: CalibrationPageProps) {
 
       {/* Main Content */}
       <main className="max-w-5xl w-full mx-auto px-4 sm:px-6 py-6 space-y-6 flex-1">
-        {/* Bed Selector Bar */}
+        {/* Patient / Bed Selector Bar */}
         <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-xs flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-3">
-            <span className="text-xs font-bold text-slate-700 uppercase">Select Bed for Calibration:</span>
+          <div className="flex items-center gap-3 flex-wrap">
+            <span className="text-xs font-bold text-slate-700 uppercase">Select Patient / Bed for Calibration:</span>
             <div className="flex items-center gap-1.5 flex-wrap">
-              {['205', '102', '310', '108'].map((bed) => (
-                <button
-                  key={bed}
-                  onClick={() => {
-                    setSelectedBed(bed);
-                    const cal = calibrations[bed];
-                    if (cal) {
-                      setTareWeightInput(cal.tareWeight.toString());
-                      setIrSensitivityInput(cal.irSensitivity);
-                    }
-                  }}
-                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
-                    selectedBed === bed
-                      ? 'bg-sky-600 text-white shadow-xs'
-                      : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
-                  }`}
-                >
-                  Bed {bed}
-                </button>
-              ))}
+              {patients.map((p) => {
+                const isSelected = p.details.id === selectedPatientId;
+                return (
+                  <button
+                    key={p.details.id}
+                    onClick={() => {
+                      setSelectedPatientId(p.details.id);
+                    }}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 ${
+                      isSelected
+                        ? 'bg-sky-600 text-white shadow-xs'
+                        : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                    }`}
+                  >
+                    <span>Bed {p.details.bedNo}</span>
+                    <span className="text-[10px] opacity-75">({p.details.patientName})</span>
+                  </button>
+                );
+              })}
             </div>
           </div>
 
@@ -137,7 +182,9 @@ export function CalibrationPage({ onBack }: CalibrationPageProps) {
                 <Scale className="w-4 h-4 text-sky-600" />
                 <span>1. Load Cell (HX711) Tare & Calibration</span>
               </h3>
-              <span className="text-[11px] font-semibold text-slate-400">Bed {selectedBed}</span>
+              <span className="text-[11px] font-semibold text-slate-400">
+                Bed {currentBedNo} {selectedPatient?.details?.patientName ? `• ${selectedPatient.details.patientName}` : ''}
+              </span>
             </div>
 
             <div className="space-y-4 text-xs">
@@ -160,7 +207,7 @@ export function CalibrationPage({ onBack }: CalibrationPageProps) {
                   <span className="text-slate-500">grams (g)</span>
                   <button
                     type="button"
-                    onClick={() => setTareWeightInput('30')}
+                    onClick={() => setTareWeightInput('0')}
                     className="ml-auto px-2.5 py-1 text-[11px] font-bold bg-slate-200 text-slate-700 hover:bg-slate-300 rounded-lg flex items-center gap-1"
                   >
                     <RotateCcw className="w-3 h-3" /> Tare to 0
@@ -214,7 +261,9 @@ export function CalibrationPage({ onBack }: CalibrationPageProps) {
                 <Eye className="w-4 h-4 text-teal-600" />
                 <span>2. Optical IR Drop Sensor Accuracy Test</span>
               </h3>
-              <span className="text-[11px] font-semibold text-slate-400">Bed {selectedBed}</span>
+              <span className="text-[11px] font-semibold text-slate-400">
+                Bed {currentBedNo}
+              </span>
             </div>
 
             <div className="space-y-4 text-xs">
@@ -301,7 +350,7 @@ export function CalibrationPage({ onBack }: CalibrationPageProps) {
         {/* Global Save Bar */}
         <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-xs flex items-center justify-between">
           <div className="text-xs text-slate-500">
-            Applying calibration configuration to <strong>Bed {selectedBed}</strong> (Tare: {tareWeightInput}g, Factor: {calculatedFactor}, IR: {irAccuracy}%)
+            Applying calibration configuration to <strong>Bed {currentBedNo}</strong> {selectedPatient ? `(${selectedPatient.details.patientName})` : ''} (Tare: {tareWeightInput}g, Factor: {calculatedFactor}, IR: {irAccuracy}%)
           </div>
 
           <button

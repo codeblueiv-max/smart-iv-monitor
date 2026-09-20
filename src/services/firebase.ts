@@ -13,8 +13,10 @@ import {
 import { getAuth, Auth, signInAnonymously } from 'firebase/auth';
 import {
   Patient,
+  PatientDetails,
   PatientInput,
   PatientOutput,
+  AIPrediction,
   SensorReading,
   PatientLogRecord,
   Alert,
@@ -125,29 +127,41 @@ export function normalizePatientInput(raw: any): PatientInput {
     rawValue = raw.loadCell;
     weight = raw.loadCell;
   } else if (raw.loadCell && typeof raw.loadCell === 'object') {
-    rawValue = Number(raw.loadCell.rawValue ?? raw.loadCell.weight) || 0;
-    weight = Number(raw.loadCell.weight ?? raw.loadCell.rawValue) || 0;
+    rawValue = typeof raw.loadCell.rawValue === 'number'
+      ? raw.loadCell.rawValue
+      : Number(raw.loadCell.rawValue ?? raw.loadCell.weight ?? 0);
+    weight = typeof raw.loadCell.weight === 'number'
+      ? raw.loadCell.weight
+      : Number(raw.loadCell.weight ?? raw.loadCell.rawValue ?? 0);
   } else {
-    rawValue = Number(raw.loadCellRaw ?? raw.weight) || 0;
-    weight = Number(raw.loadCellWeight ?? raw.weight ?? raw.loadCellRaw) || 0;
+    rawValue = Number(raw.loadCellRaw ?? raw.weight ?? 0);
+    weight = Number(raw.loadCellWeight ?? raw.weight ?? raw.loadCellRaw ?? 0);
   }
 
   // IR Sensor
   let dropCount = 0;
   let lastDropTimestamp = 0;
   let irSensorStatus = 'NO_SIGNAL';
+  let dripRate: number | null = null;
+
   if (typeof raw.irSensor === 'number') {
     dropCount = raw.irSensor;
     lastDropTimestamp = Date.now();
     irSensorStatus = raw.irSensor > 0 ? 'GOOD' : 'NO_SIGNAL';
   } else if (raw.irSensor && typeof raw.irSensor === 'object') {
-    dropCount = Number(raw.irSensor.dropCount ?? raw.irSensor.dripRate ?? raw.irSensor.dropRate) || 0;
+    dropCount = Number(raw.irSensor.dropCount) || 0;
     lastDropTimestamp = Number(raw.irSensor.lastDropTimestamp || raw.lastUpdated || Date.now()) || 0;
     irSensorStatus = raw.irSensor.sensorStatus || (dropCount > 0 ? 'GOOD' : 'NO_SIGNAL');
+    if ('dripRate' in raw.irSensor && raw.irSensor.dripRate !== null && raw.irSensor.dripRate !== undefined) {
+      dripRate = Number(raw.irSensor.dripRate);
+    }
   } else {
-    dropCount = Number(raw.dropCount ?? raw.irDropCount ?? raw.totalDrops ?? raw.dripRate ?? raw.dropRate) || 0;
+    dropCount = Number(raw.dropCount ?? raw.irDropCount ?? raw.totalDrops) || 0;
     lastDropTimestamp = Number(raw.lastDropTimestamp || raw.timestamp || raw.lastUpdated) || 0;
     irSensorStatus = raw.sensorQuality || (dropCount > 0 ? 'GOOD' : 'NO_SIGNAL');
+    if ('dripRate' in raw && raw.dripRate !== null && raw.dripRate !== undefined) {
+      dripRate = Number(raw.dripRate);
+    }
   }
 
   // Pulse Sensor
@@ -172,7 +186,7 @@ export function normalizePatientInput(raw: any): PatientInput {
     esp32Status,
     lastUpdated,
     loadCell: { rawValue, weight },
-    irSensor: { dropCount, lastDropTimestamp, sensorStatus: irSensorStatus },
+    irSensor: { dropCount, lastDropTimestamp, sensorStatus: irSensorStatus, dripRate },
     pulseSensor: { heartRateRaw, spo2Raw, sensorStatus: pulseSensorStatus },
   };
 }
@@ -186,8 +200,8 @@ export function normalizePatientOutput(raw: any, initialVolume = 500): PatientOu
       remainingVolume: 0,
       remainingPercentage: 0,
       dropCount: 0,
-      dripRate: 0,
-      flowRate: 0,
+      dripRate: null,
+      flowRate: null,
       eta: '--',
       heartRate: 0,
       spo2: 0,
@@ -208,8 +222,8 @@ export function normalizePatientOutput(raw: any, initialVolume = 500): PatientOu
       : 0;
 
   const dropCount = Number(raw.dropCount ?? raw.irDropCount ?? raw.totalDrops) || 0;
-  const dripRate = Number(raw.dripRate ?? raw.dropRate) || 0;
-  const flowRate = Number(raw.flowRate) || 0;
+  const dripRate = raw.dripRate !== null && raw.dripRate !== undefined ? Number(raw.dripRate) : null;
+  const flowRate = raw.flowRate !== null && raw.flowRate !== undefined ? Number(raw.flowRate) : null;
   const eta = raw.eta ? String(raw.eta) : raw.etaMinutes ? `${Math.floor(raw.etaMinutes / 60).toString().padStart(2, '0')}:${(raw.etaMinutes % 60).toString().padStart(2, '0')}` : '--';
 
   const heartRate = Number(raw.heartRate ?? raw.pulseRate ?? raw.pulseBpm ?? raw.pulse) || 0;
@@ -230,6 +244,29 @@ export function normalizePatientOutput(raw: any, initialVolume = 500): PatientOu
     ivStatus,
     pulseStatus,
     lastCalculated,
+  };
+}
+
+/**
+ * Normalizes AI prediction object from Firebase `/patients/{patientId}/AI` node.
+ */
+export function normalizeAIPrediction(raw: any): AIPrediction | null {
+  if (!raw || typeof raw !== 'object') {
+    return null;
+  }
+
+  const condition = String(raw.condition || raw.status || 'NORMAL').toUpperCase();
+  const confidence = typeof raw.confidence === 'number' ? Math.min(1.0, Math.max(0.0, raw.confidence)) : 0.90;
+  const remainingTime = typeof raw.remainingTime === 'number' ? Math.max(0, raw.remainingTime) : 0;
+  const timestamp = Number(raw.timestamp || Date.now()) || Date.now();
+  const modelVersion = String(raw.modelVersion || raw.version || 'v1');
+
+  return {
+    condition,
+    confidence,
+    remainingTime,
+    timestamp,
+    modelVersion,
   };
 }
 
@@ -395,10 +432,29 @@ export function subscribeToAllPatients(
 ): Unsubscribe | null {
   if (!rtdb) return null;
   try {
-    const patientsRef = ref(rtdb, 'patients');
-    return onValue(patientsRef, (snapshot) => {
+    const rootRef = ref(rtdb);
+    return onValue(rootRef, (snapshot) => {
       if (snapshot.exists()) {
-        onData(snapshot.val());
+        const val = snapshot.val();
+        let combined: Record<string, any> = {};
+
+        if (val.patients && typeof val.patients === 'object') {
+          combined = { ...val.patients };
+        }
+
+        // Also merge any top-level nodes such as `pat_168_bavj0`
+        Object.keys(val).forEach((key) => {
+          if (
+            key !== 'patients' &&
+            val[key] &&
+            typeof val[key] === 'object' &&
+            (key.startsWith('pat_') || val[key].input || val[key].details)
+          ) {
+            combined[key] = val[key];
+          }
+        });
+
+        onData(combined);
       }
     });
   } catch (e) {
@@ -450,10 +506,59 @@ export function subscribeToPatientOutput(
 }
 
 /**
+ * Real-time listener for patient AI prediction node (`/patients/{patientId}/AI`).
+ */
+export function subscribeToPatientAI(
+  patientId: string,
+  onData: (ai: AIPrediction | null) => void
+): Unsubscribe | null {
+  if (!rtdb) return null;
+  try {
+    const aiRef = ref(rtdb, `patients/${patientId}/AI`);
+    return onValue(aiRef, (snapshot) => {
+      if (snapshot.exists()) {
+        onData(normalizeAIPrediction(snapshot.val()));
+      } else {
+        onData(null);
+      }
+    });
+  } catch (e) {
+    console.warn(`Could not subscribe to patient AI for ${patientId}`, e);
+    return null;
+  }
+}
+
+/**
+ * Writes ML prediction payload to `/patients/{patientId}/AI` in Firebase RTDB.
+ */
+export async function writePatientAIPrediction(
+  patientId: string,
+  aiData: AIPrediction
+): Promise<boolean> {
+  if (!rtdb) return false;
+  try {
+    const aiRef = ref(rtdb, `patients/${patientId}/AI`);
+    const cleaned = cleanFirebasePayload({
+      condition: aiData.condition,
+      confidence: aiData.confidence,
+      remainingTime: aiData.remainingTime,
+      timestamp: aiData.timestamp || Date.now(),
+      modelVersion: aiData.modelVersion || 'v1',
+    });
+    await set(aiRef, cleaned);
+    return true;
+  } catch (e) {
+    console.warn(`Failed writing AI prediction to Firebase for ${patientId}:`, e);
+    return false;
+  }
+}
+
+/**
  * Writes the complete strict structure for a new patient to Firebase RTDB:
  * patients/{patientId}/details
  * patients/{patientId}/input
  * patients/{patientId}/output
+ * patients/{patientId}/calibration
  */
 export async function writePatientToFirebase(patient: Patient): Promise<boolean> {
   if (!rtdb) {
@@ -469,6 +574,8 @@ export async function writePatientToFirebase(patient: Patient): Promise<boolean>
 
   try {
     const patientRef = ref(rtdb, `patients/${patient.details.id}`);
+    const tare = patient.details.tareWeight ?? 30;
+    const factor = patient.details.calibrationFactor ?? 1.0;
     const payload = cleanFirebasePayload({
       details: {
         id: patient.details.id,
@@ -478,12 +585,18 @@ export async function writePatientToFirebase(patient: Patient): Promise<boolean>
         fluidType: patient.details.fluidType,
         prescribedDripRate: patient.details.prescribedDripRate,
         dropFactor: patient.details.dropFactor || 20,
-        calibrationFactor: patient.details.calibrationFactor ?? 1.0,
-        tareWeight: patient.details.tareWeight ?? 30,
+        calibrationFactor: factor,
+        tareWeight: tare,
         startTime: patient.details.startTime || Date.now(),
         stopTime: null,
         monitoring: true,
         notes: patient.details.notes ?? '',
+      },
+      calibration: {
+        tareWeight: tare,
+        calibrationFactor: factor,
+        irSensitivity: 8,
+        lastCalibrated: Date.now(),
       },
       input: {
         esp32Status: patient.input?.esp32Status || 'DISCONNECTED',
@@ -535,6 +648,66 @@ export async function writePatientToFirebase(patient: Patient): Promise<boolean>
       );
     }
     throw new Error(`Firebase write error: ${msg}`);
+  }
+}
+
+/**
+ * Updates patient details node in Firebase RTDB (`/patients/{patientId}/details`).
+ */
+export async function updatePatientDetailsInFirebase(
+  patientId: string,
+  details: PatientDetails
+): Promise<boolean> {
+  if (!rtdb) {
+    const initialized = initializeFirebase();
+    if (!initialized.isConfigured || !rtdb) {
+      throw new Error('Firebase Realtime Database is not configured.');
+    }
+  }
+
+  try {
+    const detailsRef = ref(rtdb, `patients/${patientId}/details`);
+    const payload = cleanFirebasePayload({
+      id: details.id,
+      patientName: details.patientName,
+      bedNo: details.bedNo,
+      initialVolume: details.initialVolume,
+      fluidType: details.fluidType,
+      prescribedDripRate: details.prescribedDripRate,
+      dropFactor: details.dropFactor || 20,
+      calibrationFactor: details.calibrationFactor ?? 1.0,
+      tareWeight: details.tareWeight ?? 0,
+      startTime: details.startTime,
+      stopTime: details.stopTime ?? null,
+      monitoring: details.monitoring,
+      notes: details.notes ?? '',
+    });
+
+    await update(detailsRef, payload);
+
+    // Also update root-level node if present (e.g. /pat_168_bavj0/details)
+    try {
+      const rootDetailsRef = ref(rtdb, `${patientId}/details`);
+      const snapshot = await get(ref(rtdb, `${patientId}`));
+      if (snapshot.exists()) {
+        await update(rootDetailsRef, payload);
+      }
+    } catch {
+      // Ignore root update error
+    }
+
+    return true;
+  } catch (e: any) {
+    console.error(`Firebase Realtime Database update error for patient ${patientId}:`, e);
+    const msg = e?.message || e?.code || 'Unable to update patient details';
+    if (
+      e?.code === 'PERMISSION_DENIED' ||
+      msg.includes('PERMISSION_DENIED') ||
+      msg.includes('permission_denied')
+    ) {
+      throw new Error('Unable to update patient details: Permission denied by Firebase rules.');
+    }
+    throw new Error(`Unable to update patient details: ${msg}`);
   }
 }
 
@@ -701,6 +874,71 @@ export async function updatePatientMonitoringStatus(
     return true;
   } catch (e: any) {
     console.error('Failed to update monitoring status in Firebase', e);
+    return false;
+  }
+}
+
+/**
+ * Saves patient calibration configuration directly to `/patients/{patientId}/calibration`
+ * and keeps `/patients/{patientId}/details` (tareWeight & calibrationFactor) in sync.
+ */
+export async function writePatientCalibrationToFirebase(
+  patientId: string,
+  cal: {
+    tareWeight: number;
+    calibrationFactor: number;
+    irSensitivity?: number;
+    lastCalibrated?: number;
+    bedNo?: string;
+  }
+): Promise<boolean> {
+  if (!rtdb) {
+    const initialized = initializeFirebase();
+    if (!initialized.isConfigured || !rtdb) return false;
+  }
+  try {
+    const calRef = ref(rtdb, `patients/${patientId}/calibration`);
+    const detailsRef = ref(rtdb, `patients/${patientId}/details`);
+    const now = cal.lastCalibrated || Date.now();
+
+    const calPayload = cleanFirebasePayload({
+      tareWeight: cal.tareWeight,
+      calibrationFactor: cal.calibrationFactor,
+      irSensitivity: cal.irSensitivity ?? 8,
+      lastCalibrated: now,
+    });
+
+    await set(calRef, calPayload);
+
+    // Keep details in sync
+    await update(detailsRef, {
+      tareWeight: cal.tareWeight,
+      calibrationFactor: cal.calibrationFactor,
+    });
+
+    // Also sync legacy /calibrations/{bedNo} if bedNo is present
+    if (cal.bedNo) {
+      try {
+        const legacyRef = ref(rtdb, `calibrations/${cal.bedNo}`);
+        await set(legacyRef, {
+          bedNo: cal.bedNo,
+          tareWeight: cal.tareWeight,
+          calibrationFactor: cal.calibrationFactor,
+          irSensitivity: cal.irSensitivity ?? 8,
+          lastCalibrated: now,
+        });
+      } catch {
+        // Ignore legacy sync errors
+      }
+    }
+
+    return true;
+  } catch (e: any) {
+    if (e?.code === 'PERMISSION_DENIED' || e?.message?.includes('PERMISSION_DENIED')) {
+      console.warn(`Firebase calibration write notice: Permission denied on /patients/${patientId}/calibration.`);
+    } else {
+      console.warn(`Failed to write patient calibration for ${patientId} to Firebase`, e);
+    }
     return false;
   }
 }

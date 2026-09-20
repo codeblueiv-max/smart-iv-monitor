@@ -4,7 +4,6 @@ import { ConnectionStatus } from '../components/ConnectionStatus';
 import { PatientCard } from '../components/PatientCard';
 import { ActiveAlertBanner } from '../components/EmergencyPopup';
 import {
-  Activity,
   Plus,
   Search,
   FileText,
@@ -188,20 +187,7 @@ export function DashboardPage({ onOpenAddPatient, onOpenSettings }: DashboardPag
         )}
 
         {/* Action Controls & Search Toolbar */}
-        <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-4">
-          <div>
-            <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2">
-              <Activity className="w-5 h-5 text-sky-600" />
-              <span>Active Bed Monitoring</span>
-              <span className="text-xs font-bold px-2 py-0.5 bg-slate-200 text-slate-700 rounded-full">
-                {activePatients.length} Active
-              </span>
-            </h2>
-            <p className="text-xs text-slate-500">
-              Sorted by urgency: Lowest remaining IV volume shown first
-            </p>
-          </div>
-
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-end gap-4">
           <div className="flex flex-wrap items-center gap-2.5">
             {/* Search Input */}
             <div className="relative flex-1 sm:w-60">

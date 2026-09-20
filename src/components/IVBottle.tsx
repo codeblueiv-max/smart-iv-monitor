@@ -185,8 +185,8 @@ function IVBottleComponent({
           <defs>
             {/* Fluid fill gradient */}
             <linearGradient id={`iv-fluid-grad-${size}`} x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor={fluidTheme.top} stopOpacity="0.88" />
-              <stop offset="100%" stopColor={fluidTheme.bottom} stopOpacity="0.96" />
+              <stop offset="0%" stopColor={fluidTheme.top} stopOpacity="1" />
+              <stop offset="100%" stopColor={fluidTheme.bottom} stopOpacity="1" />
             </linearGradient>
 
             {/* Translucent glass reflection */}
@@ -228,26 +228,27 @@ function IVBottleComponent({
           <g clipPath={`url(#bottle-clip-${size})`}>
             {/* Animated Liquid Fill Rect - Fills from fluidY down to bottom of bottle */}
             {!isNoData && pct > 0 && (
-              <motion.rect
+              <rect
                 x="48"
                 y={fluidY}
                 width="124"
-                height={Math.max(0, 290 - fluidY)}
+                height={Math.max(0, 286 - fluidY)}
                 fill={`url(#iv-fluid-grad-${size})`}
-                initial={false}
-                animate={{ y: fluidY, height: Math.max(0, 290 - fluidY) }}
-                transition={{ type: 'spring', damping: 24, stiffness: 65 }}
+                style={{ transition: 'y 0.4s ease-out, height 0.4s ease-out' }}
               />
             )}
 
-            {/* Meniscus Wave & Liquid Surface Reflection */}
+            {/* Meniscus Line & Liquid Surface Reflection at exact level */}
             {!isNoData && pct > 0 && pct < 100 && (
-              <motion.path
-                d={`M 50,${fluidY} Q 80,${fluidY - 3} 110,${fluidY} T 170,${fluidY} L 170,${fluidY + 6} L 50,${fluidY + 6} Z`}
-                fill="#ffffff"
-                opacity="0.45"
-                animate={{ y: [0, -1.5, 0] }}
-                transition={{ repeat: Infinity, duration: 2.2, ease: 'easeInOut' }}
+              <line
+                x1="52"
+                y1={fluidY}
+                x2="168"
+                y2={fluidY}
+                stroke="#ffffff"
+                strokeWidth="1.5"
+                opacity="0.6"
+                style={{ transition: 'y1 0.4s ease-out, y2 0.4s ease-out' }}
               />
             )}
 
@@ -338,7 +339,7 @@ function IVBottleComponent({
           {!isNoData && pct > 0 && (
             <g>
               {/* Full-width dashed line tracking fluid meniscus */}
-              <motion.line
+              <line
                 x1="52"
                 y1={fluidY}
                 x2="182"
@@ -347,24 +348,20 @@ function IVBottleComponent({
                 strokeWidth="2"
                 strokeDasharray="4 2"
                 opacity="0.9"
-                animate={{ y1: fluidY, y2: fluidY }}
-                transition={{ type: 'spring', damping: 24, stiffness: 65 }}
+                style={{ transition: 'y1 0.4s ease-out, y2 0.4s ease-out' }}
               />
 
               {/* Arrow pointing at exact fluid level */}
-              <motion.polygon
+              <polygon
                 points={`182,${fluidY} 188,${fluidY - 4.5} 188,${fluidY + 4.5}`}
                 fill={fluidTheme.marker}
-                animate={{
-                  points: `182,${fluidY} 188,${fluidY - 4.5} 188,${fluidY + 4.5}`,
-                }}
-                transition={{ type: 'spring', damping: 24, stiffness: 65 }}
+                style={{ transition: 'points 0.4s ease-out' }}
               />
 
               {/* Floating Level Readout Badge on the right */}
-              <motion.g
-                animate={{ y: tagY }}
-                transition={{ type: 'spring', damping: 24, stiffness: 65 }}
+              <g
+                transform={`translate(0, ${tagY})`}
+                style={{ transition: 'transform 0.4s ease-out' }}
               >
                 <rect
                   x="188"
@@ -399,7 +396,7 @@ function IVBottleComponent({
                 >
                   {Math.round(pct)}%
                 </text>
-              </motion.g>
+              </g>
             </g>
           )}
 

@@ -13,15 +13,20 @@ import {
 } from '../types';
 
 export const STATUS_PRIORITIES: Record<PatientStatus, number> = {
+  BAG_NEARLY_EMPTY: 1,
   CRITICAL_VOLUME: 1,
+  LOW_VOLUME: 1,
+  OCCLUSION: 2,
   POSSIBLE_OCCLUSION: 2,
-  POSSIBLE_EXCESSIVE_FLOW: 3,
-  POSSIBLE_LEAKAGE: 4,
+  LEAKAGE: 3,
+  POSSIBLE_LEAKAGE: 3,
+  EXCESSIVE_FLOW: 4,
+  POSSIBLE_EXCESSIVE_FLOW: 4,
   ABNORMAL_FLOW: 5,
+  ABNORMAL_PULSE: 6,
   ABNORMAL: 6,
   HIGH_PULSE: 7,
   LOW_PULSE: 8,
-  LOW_VOLUME: 9,
   SENSOR_UNSTABLE: 10,
   ESP32_DISCONNECTED: 11,
   NO_PULSE_DATA: 12,
@@ -51,21 +56,77 @@ export function calculateRemainingPercentage(
   return Math.min(100, Math.max(0, Math.round(pct * 10) / 10));
 }
 
-export function calculateFlowRate(dripRate: number, dropFactor: number): number {
-  if (!dropFactor || dropFactor <= 0 || !dripRate || dripRate <= 0) return 0;
-  // Flow Rate (mL/min) = dripRate / dropFactor
-  // Flow Rate (mL/hour) = (dripRate / dropFactor) * 60
-  return Math.round(((dripRate / dropFactor) * 60) * 10) / 10;
+/**
+ * Prescribed IV Drip Rate Formula:
+ * Drip Rate (drops/min or gtt/min) = (Total Volume in mL × Drop Factor in drops/mL) ÷ Total Time in minutes
+ *
+ * Example:
+ * Total Volume = 100 mL, Infusion Time = 1 hour (60 min), Drop Factor = 20 drops/mL
+ * dripRate = (100 * 20) / 60 = 33.3333... drops/min
+ *
+ * Returns exact internal float value (e.g. 33.333333333333336).
+ * Display values are rounded to the nearest integer (33 dpm).
+ */
+export function calculatePrescribedDripRate(
+  totalVolumeML: number,
+  dropFactor: number,
+  infusionTimeHours: number = 0,
+  infusionTimeMinutes: number = 0
+): number {
+  if (!totalVolumeML || totalVolumeML <= 0 || !dropFactor || dropFactor <= 0) {
+    return 0;
+  }
+  const totalMinutes = (infusionTimeHours || 0) * 60 + (infusionTimeMinutes || 0);
+  if (!totalMinutes || totalMinutes <= 0) {
+    return 0;
+  }
+  const dpm = (totalVolumeML * dropFactor) / totalMinutes;
+  return isFinite(dpm) && dpm > 0 ? dpm : 0;
+}
+
+/**
+ * IV Flow Rate Formula:
+ * Flow Rate (mL/hour) = (Actual Drip Rate (dpm) × 60) ÷ Drop Factor (drops/mL)
+ *
+ * Example:
+ * Actual Drip Rate = 20 dpm, Drop Factor = 20 drops/mL -> (20 * 60) / 20 = 60 mL/h
+ * Actual Drip Rate = 35 dpm, Drop Factor = 20 drops/mL -> (35 * 60) / 20 = 105 mL/h
+ */
+export function calculateFlowRate(dripRate: number | null | undefined, dropFactor: number): number | null {
+  if (!dropFactor || dropFactor <= 0 || dripRate === null || dripRate === undefined || dripRate <= 0) return null;
+  const flowRateMLH = (dripRate * 60) / dropFactor;
+  return isFinite(flowRateMLH) && flowRateMLH > 0 ? Math.round(flowRateMLH * 10) / 10 : null;
+}
+
+/**
+ * Estimated Time of Arrival / Empty Time (ETA):
+ * ETA (hours) = Remaining Volume (mL) ÷ Actual Flow Rate (mL/h)
+ * ETA (minutes) = (Remaining Volume × 60) ÷ Actual Flow Rate
+ *
+ * Example:
+ * Remaining Volume = 56 mL, Actual Flow Rate = 60 mL/h -> ETA = 56 min -> "0 hr 56 min"
+ * If Actual Flow Rate <= 0 -> display "--"
+ */
+export function calculateETA(remainingVolume: number, actualFlowRateMLH: number | null | undefined): string {
+  if (!actualFlowRateMLH || actualFlowRateMLH <= 0 || !remainingVolume || remainingVolume <= 0) {
+    return '--';
+  }
+  const totalMinutes = Math.round((remainingVolume / actualFlowRateMLH) * 60);
+  if (!isFinite(totalMinutes) || totalMinutes < 0 || totalMinutes > 5999) {
+    return '--';
+  }
+  const hours = Math.floor(totalMinutes / 60);
+  const mins = totalMinutes % 60;
+  return `${hours} hr ${mins.toString().padStart(2, '0')} min`;
 }
 
 export function calculateETAMinutes(
   remainingVolume: number,
-  flowRate: number
+  flowRate: number | null | undefined
 ): number | null {
-  if (flowRate <= 0.05 || remainingVolume <= 0) {
+  if (!flowRate || flowRate <= 0.05 || remainingVolume <= 0) {
     return null;
   }
-  // flowRate is in mL/hour -> ETA (minutes) = (remainingVolume / flowRate) * 60
   const minutes = (remainingVolume / flowRate) * 60;
   if (!isFinite(minutes) || minutes < 0 || minutes > 99999) return null;
   return Math.round(minutes);
@@ -78,7 +139,7 @@ export function formatETA(etaMinutes: number | null): string {
   const hours = Math.floor(etaMinutes / 60);
   const mins = Math.floor(etaMinutes % 60);
   const pad = (n: number) => n.toString().padStart(2, '0');
-  return `${pad(hours)}:${pad(mins)}`;
+  return `${hours} hr ${pad(mins)} min`;
 }
 
 export function evaluateSensorQuality(
@@ -269,7 +330,8 @@ export function evaluatePatientDiagnostics(
   recentLogs: PatientLogRecord[] = []
 ): DiagnosticResult {
   const { volume, remainingPercentage, dripRate, sensorQuality } = current;
-  const prescribed = details.prescribedDripRate || 20;
+  const prescribedDecimal = details.prescribedDripRate || 33.333;
+  const upperToleranceLimit = prescribedDecimal * 1.20;
 
   // 1. Critical Low Volume (< 10%)
   if (remainingPercentage < 10 && volume >= 0) {
@@ -282,7 +344,7 @@ export function evaluatePatientDiagnostics(
     };
   }
 
-  // 2. Possible Leakage (Volume decreasing while drip rate is very low or near zero <= 2 dpm)
+  // 2. Possible Leakage (Volume decreasing while drip rate is 0 or very low <= 2 dpm)
   if (recentLogs.length >= 1 && dripRate <= 3 && volume > 0) {
     const prev = recentLogs[recentLogs.length - 1];
     const prevVol = prev.volume ?? (prev.weight ? Math.max(0, prev.weight - 30) : null);
@@ -298,23 +360,23 @@ export function evaluatePatientDiagnostics(
   }
 
   // 3. Possible Occlusion / Blockage (Remaining volume present > 15 mL, drip rate stopped/near zero <= 2 dpm while prescribed >= 5 dpm)
-  if (volume > 15 && dripRate <= 2 && prescribed >= 5) {
+  if (volume > 15 && dripRate <= 2 && prescribedDecimal >= 5) {
     return {
       status: 'POSSIBLE_OCCLUSION',
       severity: 'CRITICAL',
       alertType: 'POSSIBLE_OCCLUSION',
-      alertMessage: `Possible Line Blockage/Occlusion: Fluid remains (${volume} mL), but detected drip rate is stopped (${dripRate} dpm).`,
+      alertMessage: `Possible Line Blockage/Occlusion: Fluid level unchanged (${volume} mL), but actual drip rate is 0 dpm.`,
       suggestedAction: 'Check IV tubing for kinks, roller clamp closure, or catheter occlusion.',
     };
   }
 
-  // 4. Possible Excessive Flow (Drip rate significantly higher than prescribed rate)
-  if (dripRate > Math.max(30, prescribed * 1.35) && volume > 10) {
+  // 4. Excessive Flow (Actual IR drip rate > prescribed drip rate * 1.20 tolerance)
+  if (dripRate > upperToleranceLimit && volume > 10 && prescribedDecimal > 0) {
     return {
       status: 'POSSIBLE_EXCESSIVE_FLOW',
       severity: 'CRITICAL',
       alertType: 'POSSIBLE_EXCESSIVE_FLOW',
-      alertMessage: `Excessive IV Flow Rate Detected: ${dripRate} dpm (prescribed: ${prescribed} dpm).`,
+      alertMessage: `Excessive IV Flow Rate Detected: Actual ${Math.round(dripRate)} dpm exceeds upper limit of ${Math.round(upperToleranceLimit)} dpm (prescribed: ${Math.round(prescribedDecimal)} dpm).`,
       suggestedAction: 'Immediately adjust roller clamp or infusion regulator to prevent fluid overload.',
     };
   }
@@ -437,108 +499,115 @@ export function calculatePatientOutput(
   input: PatientInput,
   previousOutput?: PatientOutput
 ): PatientOutput {
-  const tareWeight = typeof details.tareWeight === 'number' ? details.tareWeight : 30;
+  // ==========================================
+  // INPUTS & CONSTANTS
+  // ==========================================
+  const tareWeight = typeof details.tareWeight === 'number' ? details.tareWeight : 0;
   const calibrationFactor =
     typeof details.calibrationFactor === 'number' && details.calibrationFactor > 0
       ? details.calibrationFactor
       : 1.0;
-  const initialVolume =
-    typeof details.initialVolume === 'number' && details.initialVolume > 0
-      ? details.initialVolume
-      : 500;
-  const dropFactor =
-    typeof details.dropFactor === 'number' && details.dropFactor > 0 ? details.dropFactor : 20;
 
-  // 1. Load Cell Calculations
-  let rawWeight = 0;
+  // 1. INITIAL IV VOLUME
+  const initialVolumeML = typeof details.initialVolume === 'number' && details.initialVolume > 0
+    ? details.initialVolume
+    : 500;
+
+  // 7. DROP FACTOR
+  const dropFactor = typeof details.dropFactor === 'number' && details.dropFactor > 0
+    ? details.dropFactor
+    : 20;
+
+  const prescribedDripRate = typeof details.prescribedDripRate === 'number' && details.prescribedDripRate > 0
+    ? details.prescribedDripRate
+    : 0;
+
+  // ==========================================
+  // LOAD CELL & VOLUME CALCULATIONS
+  // ==========================================
+  let weightValue: number | null = null;
   if (typeof (input as any)?.loadCell === 'number') {
-    rawWeight = (input as any).loadCell;
-  } else if (typeof input?.loadCell?.weight === 'number' && input.loadCell.weight > 0) {
-    rawWeight = input.loadCell.weight;
-  } else if (typeof input?.loadCell?.rawValue === 'number' && input.loadCell.rawValue > 0) {
-    rawWeight = input.loadCell.rawValue;
+    weightValue = (input as any).loadCell;
+  } else if (input?.loadCell && typeof input.loadCell === 'object') {
+    if (typeof input.loadCell.weight === 'number') {
+      weightValue = input.loadCell.weight;
+    } else if (typeof input.loadCell.rawValue === 'number') {
+      weightValue = input.loadCell.rawValue;
+    }
   } else if (typeof (input as any)?.weight === 'number') {
-    rawWeight = (input as any).weight;
+    weightValue = (input as any).weight;
   }
 
-  let remainingVolume = 0;
-  let remainingPercentage = 0;
+  // 2. REMAINING IV VOLUME (using load cell)
+  // Formula: remainingVolumeML = calibratedLoadCellVolumeML
+  let remainingVolumeML = 0;
+  if (weightValue !== null && !isNaN(weightValue)) {
+    const netWeight = Math.max(0, weightValue - tareWeight);
+    const calibratedLoadCellVolumeML = netWeight / calibrationFactor;
+    remainingVolumeML = Math.min(initialVolumeML, Math.max(0, Math.round(calibratedLoadCellVolumeML * 10) / 10));
+  } else if (previousOutput && typeof previousOutput.remainingVolume === 'number') {
+    remainingVolumeML = previousOutput.remainingVolume;
+  } else {
+    remainingVolumeML = initialVolumeML;
+  }
 
-  if (rawWeight > 0) {
-    const netWeight = Math.max(0, rawWeight - tareWeight);
-    const calculatedVolume = netWeight / calibrationFactor;
-    remainingVolume = Math.min(initialVolume, Math.max(0, Math.round(calculatedVolume * 10) / 10));
+  // 3. INFUSED VOLUME
+  // Formula: infusedVolumeML = initialVolumeML - remainingVolumeML
+  const infusedVolumeML = Math.max(0, Math.round((initialVolumeML - remainingVolumeML) * 10) / 10);
+
+  // 4. REMAINING PERCENTAGE
+  // Formula: remainingPercentage = (remainingVolumeML / initialVolumeML) * 100
+  let remainingPercentage = 0;
+  if (initialVolumeML > 0) {
     remainingPercentage = Math.min(
       100,
-      Math.max(0, Math.round(((remainingVolume / initialVolume) * 100) * 10) / 10)
+      Math.max(0, Math.round(((remainingVolumeML / initialVolumeML) * 100) * 10) / 10)
     );
-  } else if (
-    (input?.lastUpdated === 0 || !input?.lastUpdated) &&
-    (!input?.esp32Status || input.esp32Status === 'DISCONNECTED')
-  ) {
-    remainingVolume = 0;
-    remainingPercentage = 0;
-  } else if (previousOutput && previousOutput.remainingVolume > 0) {
-    remainingVolume = previousOutput.remainingVolume;
-    remainingPercentage = previousOutput.remainingPercentage;
   }
 
-  // 2. IR Sensor Calculations
-  let dropCount = 0;
-  let dripRate = 0;
+  // ==========================================
+  // IR SENSOR & DRIP RATE CALCULATIONS
+  // ==========================================
+  // 5. TOTAL DROPS
+  // Formula: totalDropsCount = currentIRSensorDropCount
+  const totalDropsCount = Number(input?.irSensor?.dropCount ?? 0);
 
-  if (typeof (input as any)?.irSensor === 'number') {
-    dripRate = (input as any).irSensor;
-    dropCount = (input as any).irSensor;
-  } else if (input?.irSensor && typeof input.irSensor === 'object') {
-    dropCount = typeof input.irSensor.dropCount === 'number' ? Math.max(0, input.irSensor.dropCount) : 0;
-    if (typeof (input.irSensor as any).dripRate === 'number') {
-      dripRate = (input.irSensor as any).dripRate;
-    } else if (typeof (input.irSensor as any).dropRate === 'number') {
-      dripRate = (input.irSensor as any).dropRate;
-    }
-  } else if (typeof (input as any)?.dripRate === 'number') {
-    dripRate = (input as any).dripRate;
-  } else if (typeof (input as any)?.dropRate === 'number') {
-    dripRate = (input as any).dropRate;
+  // 6. ACTUAL DPM (DROPS PER MINUTE)
+  // Derived strictly from the manually entered dripRate in Firebase Realtime Database.
+  // The ESP32 must not send, calculate, update, or overwrite this value.
+  const actualDPM: number | null = (input?.irSensor?.dripRate !== undefined && input?.irSensor?.dripRate !== null)
+    ? Number(input.irSensor.dripRate)
+    : null;
+
+  // ==========================================
+  // FLOW RATE & DEVIATION CALCULATIONS
+  // ==========================================
+  // 8. ACTUAL FLOW RATE (mL/h)
+  // Formula: actualFlowRateMLH = (actualDPM * 60) / dropFactor
+  const actualFlowRateMLH = (actualDPM !== null && actualDPM !== undefined && actualDPM > 0 && dropFactor > 0)
+    ? Math.round(((actualDPM * 60) / dropFactor) * 10) / 10
+    : null;
+
+  // 9. PRESCRIBED FLOW RATE (mL/h)
+  // Formula: prescribedFlowRateMLH = (prescribedDripRate * 60) / dropFactor
+  const prescribedFlowRateMLH = dropFactor > 0 ? Math.round(((prescribedDripRate * 60) / dropFactor) * 10) / 10 : 0;
+
+  // 10. FLOW RATE DEVIATION (%)
+  // Formula: flowDeviationPercentage = ((actualFlowRateMLH - prescribedFlowRateMLH) / prescribedFlowRateMLH) * 100
+  let flowDeviationPercentage: number | string = '--';
+  if (actualFlowRateMLH !== null && actualFlowRateMLH !== undefined && prescribedFlowRateMLH > 0) {
+    flowDeviationPercentage = Math.round(((actualFlowRateMLH - prescribedFlowRateMLH) / prescribedFlowRateMLH) * 100 * 10) / 10;
   }
 
-  const irStatus = input?.irSensor?.sensorStatus || (dripRate > 0 || dropCount > 0 ? 'GOOD' : 'NO_SIGNAL');
+  // ==========================================
+  // 12. ESTIMATED TIME OF ARRIVAL (ETA)
+  // Formula: etaHours = remainingVolumeML / actualFlowRateMLH (formatted as X hr Y min)
+  // ==========================================
+  const eta = calculateETA(remainingVolumeML, actualFlowRateMLH);
 
-  if (dripRate === 0 && dropCount > 0) {
-    if (
-      previousOutput &&
-      previousOutput.dropCount > 0 &&
-      input?.irSensor?.lastDropTimestamp &&
-      previousOutput.lastCalculated
-    ) {
-      const deltaDrops = dropCount - previousOutput.dropCount;
-      const deltaMs = input.irSensor.lastDropTimestamp - previousOutput.lastCalculated;
-      if (deltaDrops > 0 && deltaMs > 500 && deltaMs < 180000) {
-        dripRate = Math.round(deltaDrops / (deltaMs / 60000));
-      } else if (previousOutput.dripRate > 0) {
-        dripRate = previousOutput.dripRate;
-      }
-    } else if (previousOutput?.dripRate && previousOutput.dripRate > 0) {
-      dripRate = previousOutput.dripRate;
-    } else {
-      dripRate = details.prescribedDripRate || 20;
-    }
-  }
-
-  // flowRate in mL/hour: (dripRate / dropFactor) * 60
-  const flowRate = dripRate > 0 ? calculateFlowRate(dripRate, dropFactor) : 0;
-
-  // ETA Calculation (in hours: remainingVolume / flowRate_mL_per_hour -> in minutes: (remainingVolume / flowRate) * 60)
-  let eta = '--';
-  if (flowRate > 0.05 && remainingVolume > 0) {
-    const totalMinutes = Math.round((remainingVolume / flowRate) * 60);
-    const hours = Math.floor(totalMinutes / 60);
-    const mins = totalMinutes % 60;
-    eta = `${hours.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}`;
-  }
-
-  // 3. Pulse Sensor Calculations
+  // ==========================================
+  // PULSE SENSOR & HEART RATE CALCULATIONS
+  // ==========================================
   let heartRateRaw = 0;
   let spo2Raw = 0;
   let pulseStatusSignal = input?.pulseSensor?.sensorStatus || 'NO_SIGNAL';
@@ -595,46 +664,79 @@ export function calculatePatientOutput(
     spo2 = 0;
   }
 
-  // 4. IV Status Logic
+  // ==========================================
+  // 11. FLOW STATUS / IV STATUS LOGIC
+  // Tolerance limits: ±15% of prescribed flow rate
+  // ==========================================
   let ivStatus: PatientStatus = 'NORMAL';
+  let flowStatusLabel = 'Normal Flow';
+
+  const deviationVal = typeof flowDeviationPercentage === 'number' ? flowDeviationPercentage : 0;
+
   if (details.monitoring === false) {
     ivStatus = 'MONITORING_STOPPED';
     pulseStatus = 'STOPPED';
+    flowStatusLabel = 'STOPPED';
   } else if (
     (input?.lastUpdated === 0 || !input?.lastUpdated) &&
-    rawWeight === 0 &&
-    dropCount === 0 &&
+    (weightValue === null || weightValue === 0) &&
+    totalDropsCount === 0 &&
     heartRate === 0
   ) {
     ivStatus = 'NO_DATA';
+    flowStatusLabel = 'No Data';
   } else if (input?.esp32Status === 'DISCONNECTED') {
     ivStatus = 'ESP32_DISCONNECTED';
-  } else if (remainingPercentage < 10 && remainingVolume >= 0) {
+    flowStatusLabel = 'ESP32 Disconnected';
+  } else if (remainingPercentage < 10 && remainingVolumeML >= 0) {
     ivStatus = 'CRITICAL_VOLUME';
-  } else if (remainingVolume > 15 && dripRate <= 2 && (details.prescribedDripRate || 0) >= 5) {
+    flowStatusLabel = 'Critical Volume';
+  } else if (remainingVolumeML > 15 && actualDPM <= 2 && prescribedDripRate >= 5) {
     ivStatus = 'POSSIBLE_OCCLUSION';
+    flowStatusLabel = 'POSSIBLE OCCLUSION';
   } else if (
-    dripRate > Math.max(30, (details.prescribedDripRate || 0) * 1.35) &&
-    remainingVolume > 10
+    deviationVal > 15 &&
+    remainingVolumeML > 10 &&
+    prescribedDripRate > 0
   ) {
     ivStatus = 'POSSIBLE_EXCESSIVE_FLOW';
+    flowStatusLabel = 'Excessive Flow';
+  } else if (deviationVal < -15 && remainingVolumeML > 10 && prescribedDripRate > 0) {
+    ivStatus = 'ABNORMAL_FLOW'; // Low Flow
+    flowStatusLabel = 'Low Flow';
   } else if (remainingPercentage <= 20 && remainingPercentage >= 10) {
     ivStatus = 'LOW_VOLUME';
+    flowStatusLabel = 'Low Volume Warning';
   } else {
     ivStatus = 'NORMAL';
+    flowStatusLabel = 'Normal Flow';
   }
 
+  // ==========================================
+  // RETURN NORMALIZED PATIENT OUTPUT
+  // ==========================================
   return {
-    remainingVolume,
+    remainingVolume: remainingVolumeML,
     remainingPercentage,
-    dropCount,
-    dripRate,
-    flowRate,
+    dropCount: totalDropsCount,
+    dripRate: actualDPM,
+    flowRate: actualFlowRateMLH,
     eta,
     heartRate,
     spo2,
     ivStatus,
     pulseStatus,
     lastCalculated: Date.now(),
+    // Standard IV Monitoring parameters
+    initialVolumeML,
+    remainingVolumeML,
+    infusedVolumeML,
+    totalDropsCount,
+    actualDPM,
+    dropFactor,
+    actualFlowRateMLH,
+    prescribedFlowRateMLH,
+    flowDeviationPercentage,
+    flowStatus: flowStatusLabel,
   };
 }
